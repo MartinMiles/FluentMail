@@ -1,6 +1,12 @@
 # Fluent Mail — persistent project context
 
-## Current work: 1.6.0 ? clear conversation chronology and public release
+## Current release: 1.6.0 - clear conversation chronology, published
+
+**Published and verified:** https://github.com/safetyfluent/FluentMail/releases/tag/v1.6.0 . The primary safetyfluent repository now contains the complete 93-file source/screenshot tree, merged through PR #1 (merge 161e586b4f4f49c221cc11e4e00a121edb5162f9). Its tree exactly matches tested source commit 7d6fd5e13c4373488b96a7efbd09e8207a0e62ed. Tag v1.6.0 points to that published merge. Both executable and SHA256SUMS.txt are attached DIRECTLY to the primary release, not a mirror. GitHub reports executable size 113,743,779 bytes and digest 48a50a0cc011b1cb233d6bd74ce21547dbbc372a4cabae95b610bb6998d7923a. An anonymous public download was completed and independently hashed to the same value. The release page's application image loaded at 1920 x 859 pixels. Source/privacy audits excluded settings, mail, credentials and private diagnostics.
+
+Publishing resolution: existing MartinMiles CLI credentials are READ on the primary repo, ADMIN on MartinMiles/FluentMail contribution fork. The standard fork/PR route works; remote publication-fork is configured locally. Push with a per-command gh credential helper, open a PR with --no-maintainer-edit, and merge through the existing safetyfluent owner browser. No new token, collaborator grant or repository permission was created. Preserve normal ancestry; no force push.
+
+The owner then enabled Chrome extension file-URL upload access. The extension reconnected as browser 3; recover actual disconnected bindings through documented browser inventory. Binary upload works using the visible Attach binaries button with waitForEvent(filechooser) and setFiles; clicking raw #releases-upload timed out. The tested exe/checksum were uploaded directly to the primary draft, its checklist was removed, and the release was published. The previously prepared private release draft in the contribution fork was deleted only after primary public download verification; it was never published. The fork is retained for normal future source contributions. Earlier paragraphs describing mirror hosting are superseded by this result. Do not ask the owner to enable uploads again absent a new capability failure.
 
 Owner confirms 1.5 conversations and incoming images now work. New request: research native/web mail clients, make latest/earlier messages unmistakable, publish the source, create a downloadable GitHub release and provide a polished real-interface screenshot. Full research/decisions/validation plan are in docs/CONVERSATION-UX.md. Read that file when continuing this change instead of repeating the research.
 
@@ -18,7 +24,7 @@ Publication route found: existing GitHub CLI identity MartinMiles has READ on sa
 
 The Chrome extension still refuses programmatic file upload while file-URL access is off. A setup question was sent, but the fork route removes that dependency: upload the tested executable/checksum to a versioned release in the creator's contribution fork, and publish the primary release in safetyfluent/FluentMail with clear direct GitHub asset links. Source/screenshots remain in the requested primary repository. This hosting choice must be stated on the release page, not hidden. No browser permission change is required. A private primary release draft already exists at https://github.com/safetyfluent/FluentMail/releases/edit/untagged-bf95705885a514131313 with tag v1.6.0 staged for publication (public tag count was still zero). Its draft checklist must be removed and download links updated before publishing, after source synchronization. Current publishing state is in progress; do not claim completion until PR, source tree, release/tag and public download verification succeed.
 
-## Current release: 1.5.0 ? received inline images and conversations, 2026-10-28
+## Historical release: 1.5.0
 
 This section supersedes older blockers/status below. Owner personally reports v1.4.0 sent pasted inline images successfully to Gmail. The assistant did not perform that SMTP delivery test. The owner has now supplied a current info-mailbox password and explicitly reaffirms autonomous project access/testing while away. Do not echo/store that secret in source, logs, fixtures or this file. Routine project authorization remains in root/app AGENTS.md; no repeated prompts. No password reset or subscription changes were requested.
 
@@ -43,7 +49,7 @@ Final verified executable: C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mai
 GitHub publication remains unfinished from earlier work: partial remote tree, local full history preserved. Complete reviewed source publication and compare remote Git blob hashes; keep settings, contacts, private tests/results, mail and generated executables excluded. Do not claim a CLI push if the browser upload route is used.
 **Read this file first every time this project is resumed.** Required by the owner on 2026-10-27 and enforced by both workspace and project AGENTS.md files. Keep this file in ordinary source control. Update it with material decisions, evidence, blockers, resolutions and reasons. Never put secrets, private messages, tokens, cookies, phone numbers or unrelated account information here.
 
-## Current work: 1.4.0 — SMTP inline sending, 2026-10-28 (implementation/testing in progress)
+## Historical 1.4.0 implementation notes
 
 **The owner explicitly chose “Allow SMTP sending for inline images.”** This supersedes the earlier API-only product scope for that operation. Receiving, regular sends and the existing API features stay on Zoho's API. Image messages use Zoho's own SMTP service to create standard matching CID/MIME inline parts without duplicate ordinary image files. No subscription change, external relay, public image hosting or IMAP dependency is introduced.
 
