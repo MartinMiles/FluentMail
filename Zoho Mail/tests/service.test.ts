@@ -71,6 +71,17 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
 });
 describe("application boundary and persistence", () => {
+  it("loads a v1.0 vault with safe preferences without reconnecting", () => {
+    const s = setup();
+    expect(s.vault.data.preferences).toBeUndefined();
+    const snapshot = s.service.snapshot();
+    expect(snapshot.preferences).toMatchObject({
+      automaticChecks: true,
+      intervalSeconds: 15,
+      notifications: true,
+    });
+    expect(s.fetcher).not.toHaveBeenCalled();
+  });
   it("does not connect at startup or expose saved secrets through snapshots", async () => {
     const s = setup();
     const ref = await connect(s);

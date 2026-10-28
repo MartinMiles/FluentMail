@@ -1,3 +1,4 @@
+import { sanitizeOutgoingHtml } from "./html";
 import {
   type Account,
   type Command,
@@ -245,8 +246,8 @@ export class ZohoMail {
       ccAddress: c.cc.replaceAll(";", ","),
       bccAddress: c.bcc.replaceAll(";", ","),
       subject: c.subject,
-      content: c.body,
-      mailFormat: "plaintext",
+      content: c.format === "html" ? sanitizeOutgoingHtml(c.body) : c.body,
+      mailFormat: c.format || "plaintext",
       encoding: "UTF-8",
       askReceipt: "no",
       ...(attachments.length ? { attachments } : {}),

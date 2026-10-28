@@ -1,10 +1,13 @@
 {
   "name": "safetyfluent-mail",
   "productName": "Fluent Mail",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "A focused Windows mail client for the Zoho Mail API",
-  "author": "SafetyFluent",
+  "author": {
+    "name": "Martin Miles",
+    "email": "martin@safetyfluent.com"
+  },
   "license": "UNLICENSED",
   "type": "module",
   "main": "desktop-dist/main.cjs",
@@ -20,11 +23,18 @@
     "format": "prettier --write src desktop tests scripts/*.mjs *.json *.ts docs/*.md README.md PLAN.md AGENTS.md"
   },
   "dependencies": {
+    "@tiptap/extension-placeholder": "^3.32.0",
+    "@tiptap/extension-text-align": "^3.32.0",
+    "@tiptap/extension-text-style": "^3.32.0",
+    "@tiptap/pm": "^3.32.0",
+    "@tiptap/react": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0",
     "dompurify": "^3.3.0",
     "json-bigint": "^1.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "sanitize-html": "^2.18.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -34,6 +44,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/sanitize-html": "^2.16.2",
     "@vitejs/plugin-react": "latest",
     "electron": "45.1.0",
     "electron-builder": "26.18.0",
@@ -45,6 +56,7 @@
     "vitest": "5.0.5"
   },
   "build": {
+    "copyright": "Copyright © 2026 Martin Miles · SafetyFluent",
     "appId": "com.safetyfluent.mail",
     "directories": {
       "output": "release"

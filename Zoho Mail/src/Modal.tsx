@@ -5,11 +5,15 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  maximized = false,
+  headerActions,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  maximized?: boolean;
+  headerActions?: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -55,7 +59,9 @@ export function Modal({
   return (
     <div className="modal-scrim">
       <div
-        className={"modal " + (wide ? "wide" : "")}
+        className={
+          "modal " + (wide ? "wide " : "") + (maximized ? "maximized" : "")
+        }
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -64,6 +70,7 @@ export function Modal({
       >
         <header>
           <h2>{title}</h2>
+          {headerActions}
           <button
             className="icon-button"
             aria-label="Close dialog"

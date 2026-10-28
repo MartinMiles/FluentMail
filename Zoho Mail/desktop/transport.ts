@@ -43,6 +43,7 @@ export class Pacer {
 }
 export class ZohoTransport {
   connected = false;
+  private refreshing: Promise<void> | undefined;
   constructor(
     public secret: Secret,
     private store: SecretStore,
@@ -124,6 +125,30 @@ export class ZohoTransport {
   disconnect() {
     this.connected = false;
   }
+  private async ensureAccess() {
+    if (Date.now() < this.secret.expiresAt - 30_000) return;
+    if (!this.refreshing)
+      this.refreshing = this.pacer
+        .run(async () => {
+          if (!this.connected || this.secret.paused)
+            throw new PausedError(
+              this.secret.paused || "Account disconnected.",
+            );
+          if (Date.now() < this.secret.expiresAt - 30_000) return;
+          await this.token(
+            new URLSearchParams({
+              grant_type: "refresh_token",
+              client_id: this.secret.clientId,
+              client_secret: this.secret.clientSecret,
+              refresh_token: this.secret.refreshToken,
+            }),
+          );
+        })
+        .finally(() => {
+          this.refreshing = undefined;
+        });
+    await this.refreshing;
+  }
   async request(
     path: string,
     method = "GET",
@@ -140,14 +165,15 @@ export class ZohoTransport {
       path.includes("://")
     )
       throw new Error("Invalid API route.");
+    await this.ensureAccess();
     return this.pacer.run(async () => {
       if (!this.connected || this.secret.paused)
         throw new PausedError(this.secret.paused || "Account disconnected.");
       if (Date.now() >= this.secret.expiresAt - 30_000) {
-        // No automatic authentication traffic: explicit reconnection starts a fresh session.
+        // An unexpectedly short token or an exceptionally delayed queue does not loop renewal.
         this.connected = false;
         throw new PausedError(
-          "Your access session expired. Reconnect explicitly to continue.",
+          "Your access session expired while waiting. Reconnect explicitly to continue.",
         );
       }
       const raw = body instanceof Uint8Array;

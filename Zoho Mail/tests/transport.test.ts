@@ -4,6 +4,7 @@ import {
   Pacer,
   normalizeMessage,
   type Secret,
+  type Fetcher,
 } from "../desktop/transport";
 const secret = (): Secret => ({
   id: "offline",
@@ -17,19 +18,19 @@ const secret = (): Secret => ({
   paused: null,
 });
 function setup(
-  fetcher = vi.fn(
-    async () => new Response('{"status":{"code":200},"data":[]}'),
-  ),
+  fetcher: Fetcher = async () =>
+    new Response('{"status":{"code":200},"data":[]}'),
 ) {
   const save = vi.fn();
+  const fetchMock = vi.fn(fetcher);
   const transport = new ZohoTransport(
     secret(),
     { save },
     new Pacer(0),
-    fetcher,
+    fetchMock,
   );
   transport.connected = true;
-  return { transport, save, fetcher };
+  return { transport, save, fetcher: fetchMock };
 }
 describe("Zoho transport contracts and stop conditions", () => {
   it("preserves IDs beyond JavaScript integer precision", async () => {
@@ -110,11 +111,42 @@ describe("Zoho transport contracts and stop conditions", () => {
     );
     expect(transport.connected).toBe(false);
   });
-  it("requires explicit reconnection when token expires, with no automatic refresh", async () => {
-    const { transport, fetcher } = setup();
+  it("renews an expiring connected session once before concurrent API reads", async () => {
+    const { transport, fetcher } = setup(
+      vi.fn(async (url: string) =>
+        url.endsWith("/token")
+          ? new Response(
+              JSON.stringify({
+                access_token: "renewed-fixture",
+                expires_in: 3600,
+              }),
+            )
+          : new Response('{"status":{"code":200},"data":[]}'),
+      ),
+    );
     transport.secret.expiresAt = 0;
-    await expect(transport.request("/api/accounts")).rejects.toThrow("expired");
-    expect(fetcher).not.toHaveBeenCalled();
+    await Promise.all([
+      transport.request("/api/accounts"),
+      transport.request("/api/accounts/1/folders"),
+    ]);
+    expect(
+      fetcher.mock.calls.filter(([url]) => url.endsWith("/token")),
+    ).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(transport.secret.accessToken).toBe("renewed-fixture");
+  });
+  it("pauses on failed renewal without retrying the refresh or the mail request", async () => {
+    const { transport, fetcher } = setup(
+      vi.fn(async () => new Response('{"error":"invalid_grant"}')),
+    );
+    transport.secret.expiresAt = 0;
+    const results = await Promise.allSettled([
+      transport.request("/api/accounts"),
+      transport.request("/api/accounts"),
+    ]);
+    expect(results.every((r) => r.status === "rejected")).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(transport.connected).toBe(false);
   });
   it("does not perform any network access on construction or while disconnected", async () => {
     const { transport, fetcher } = setup();

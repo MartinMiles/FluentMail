@@ -1,5 +1,11 @@
 # API coverage and implementation boundaries
 
+## v1.1 update — 2026-10-28
+
+The same mailbox scopes and documented endpoints now support automatic Inbox polling and WYSIWYG HTML composition. New mail is detected from paced `messages/view` requests; no webhook relay or private endpoint was added. Healthy connected sessions use the documented refresh-token grant once before expiry; failures still pause without retries. Send/reply/cloud-draft payloads use `mailFormat: html` with main-process sanitization; v1.0 plaintext payloads remain valid.
+
+The original scope decisions below are historical where they mention plain-text-only composition, manual refresh, or no background checks. v1.1 preserves rich signatures/quotes and safe text formatting, but still excludes inline-image uploading, arbitrary remote content, administration, permanent deletion, and a hosted push service. See `PLAN-1.1.md` for source links and reasons. The owner reports v1.0 connection and external attachment delivery succeeded; v1.1 operations remain offline-tested by the assistant.
+
 Research checked against official Zoho documentation on 2026-10-27. API requests are constructed only in `desktop/zoho.ts` and `desktop/transport.ts`. The renderer sends validated operations, never arbitrary remote URLs. Numeric IDs remain strings; JSON-bigint prevents precision loss from unquoted server IDs.
 
 ## Mail client capabilities

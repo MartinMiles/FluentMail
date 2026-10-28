@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Compose } from "../src/shared";
+import {
+  type Compose,
+  type Preferences,
+  preferencesSchema,
+} from "../src/shared";
 import type { Secret, SecretStore } from "./transport";
 export interface Cipher {
   isEncryptionAvailable(): boolean;
@@ -12,6 +16,7 @@ type Data = {
   profiles: Secret[];
   drafts: Record<string, Compose>;
   submitted: Record<string, "pending" | "sent">;
+  preferences?: Preferences;
 };
 export class Vault implements SecretStore {
   data: Data = { version: 1, profiles: [], drafts: {}, submitted: {} };
@@ -32,6 +37,9 @@ export class Vault implements SecretStore {
         throw new Error("The protected settings file could not be read.");
       this.data = data;
     }
+  }
+  preferences() {
+    return preferencesSchema.parse(this.data.preferences || {});
   }
   persist() {
     if (!this.cipher.isEncryptionAvailable())

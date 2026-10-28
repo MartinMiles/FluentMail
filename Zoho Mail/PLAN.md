@@ -1,5 +1,7 @@
 # Fluent Mail — implementation plan
 
+This is the historical v1.0 plan. The owner's 2026-10-28 request supersedes manual-refresh/plain-text-only/tray-exit decisions for v1.1; read `docs/PLAN-1.1.md` and the current `PROJECT_CONTEXT.md` first. Development/testing still must stay offline unless separately authorized.
+
 Standalone Windows mail client for Zoho Mail. Requested 2026-10-27.
 
 ## Decisions

@@ -7,6 +7,8 @@ import {
   type Account,
   type Command,
   type LocalFile,
+  type Folder,
+  type ListResult,
   type Result,
   validateRecipients,
 } from "../src/shared";
@@ -37,6 +39,7 @@ export class MailService {
     }
   >();
   private busy = new Set<string>();
+  private folderCache = new Map<string, Folder[]>();
   constructor(
     private vault: Vault,
     private dialogs: Dialogs,
@@ -54,7 +57,64 @@ export class MailService {
         paused: p.paused,
       })),
       accounts: [...this.clients.values()].flatMap((c) => c.accounts),
+      preferences: this.vault.preferences(),
     };
+  }
+  isBusy() {
+    return this.busy.size > 0;
+  }
+  connectedAccounts() {
+    return [...this.clients.values()]
+      .filter((c) => c.transport.connected && !c.transport.secret.paused)
+      .flatMap((c) => c.accounts);
+  }
+  isConnected(profileId: string) {
+    const c = this.clients.get(profileId);
+    return !!c?.transport.connected && !c.transport.secret.paused;
+  }
+  async pollInbox(account: Account, start = 1): Promise<ListResult> {
+    const client = this.clients.get(account.profileId);
+    if (!client || !this.isConnected(account.profileId))
+      throw new Error("Account disconnected.");
+    const key = account.profileId + ":" + account.id;
+    let folders = this.folderCache.get(key);
+    if (!folders) {
+      folders = (await client.execute({
+        op: "folders",
+        profileId: account.profileId,
+        accountId: account.id,
+      })) as Folder[];
+      this.folderCache.set(key, folders);
+    }
+    const inbox = folders.find((f) => f.path.toLowerCase() === "/inbox");
+    if (!inbox) return { messages: [], hasMore: false };
+    return client.execute({
+      op: "list",
+      profileId: account.profileId,
+      accountId: account.id,
+      folderId: inbox.id,
+      start,
+      filter: "all",
+    }) as Promise<ListResult>;
+  }
+  stopAll() {
+    for (const c of this.clients.values()) c.transport.disconnect();
+  }
+  pauseAfterSyncError(profileId: string) {
+    const transport = this.clients.get(profileId)?.transport;
+    if (transport?.connected) {
+      try {
+        transport.stop(
+          "Automatic mail checks stopped after an unexpected result. Review the account before reconnecting. No retry was made.",
+        );
+      } catch {
+        /* stop deliberately throws after persisting the pause. */
+      }
+    }
+    return (
+      transport?.secret.paused ||
+      "Mail checks stopped. Reconnect after reviewing the account."
+    );
   }
   async invoke(input: unknown): Promise<Result> {
     const parsed = commandSchema.safeParse(input);
@@ -78,6 +138,11 @@ export class MailService {
   }
   private async execute(c: Command): Promise<unknown> {
     if (c.op === "snapshot") return this.snapshot();
+    if (c.op === "preferences") {
+      this.vault.data.preferences = c.preferences;
+      this.vault.persist();
+      return this.snapshot();
+    }
     if (c.op === "demo")
       throw new Error("Use the separate Demo launch to explore sample mail.");
     if (c.op === "openLink") {
@@ -124,6 +189,8 @@ export class MailService {
           new ZohoTransport(secret, this.vault, this.pacer, this.fetcher),
         );
         this.clients.set(secret.id, client);
+        for (const key of this.folderCache.keys())
+          if (key.startsWith(secret.id + ":")) this.folderCache.delete(key);
         await client.transport.authorize(
           c.op === "connect" ? c.code : undefined,
         );
@@ -136,6 +203,8 @@ export class MailService {
     if (c.op === "disconnect" || c.op === "forget") {
       this.clients.get(c.profileId)?.transport.disconnect();
       this.clients.delete(c.profileId);
+      for (const key of this.folderCache.keys())
+        if (key.startsWith(c.profileId + ":")) this.folderCache.delete(key);
       if (c.op === "forget") this.vault.forget(c.profileId);
       for (const [key, f] of this.files)
         if (f.profileId === c.profileId) this.files.delete(key);
@@ -254,6 +323,9 @@ export class MailService {
         this.busy.delete(key);
       }
     }
-    return client.execute(c);
+    const result = await client.execute(c);
+    if (c.op === "folders")
+      this.folderCache.set(c.profileId + ":" + c.accountId, result as Folder[]);
+    return result;
   }
 }

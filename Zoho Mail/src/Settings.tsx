@@ -1,20 +1,29 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { ShieldCheck, Plug, Unplug, Trash2, ExternalLink } from "lucide-react";
 import { Modal } from "./Modal";
 import { call } from "./api";
-import { REGIONS, SCOPES, type Region, type Snapshot } from "./shared";
+import {
+  REGIONS,
+  SCOPES,
+  DEFAULT_PREFERENCES,
+  type Region,
+  type Snapshot,
+  type Preferences,
+} from "./shared";
 export function Settings({
   snapshot,
   onUpdate,
   onClose,
   dark,
   onTheme,
+  onConnected,
 }: {
   snapshot: Snapshot;
   onUpdate: (s: Snapshot) => void;
   onClose: () => void;
   dark: boolean;
   onTheme: () => void;
+  onConnected?: (snapshot: Snapshot, email: string) => void;
 }) {
   const [email, setEmail] = useState("");
   const [region, setRegion] = useState<Region>("US");
@@ -25,23 +34,48 @@ export function Settings({
   const [error, setError] = useState("");
   const [review, setReview] = useState("");
   const [remove, setRemove] = useState("");
-  const run = async (fn: () => Promise<Snapshot>) => {
-    if (busy) return;
+  const [feedback, setFeedback] = useState("");
+  const active = useRef(false);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const prefs = snapshot.preferences || DEFAULT_PREFERENCES;
+  useEffect(() => {
+    if (error) {
+      errorRef.current?.scrollIntoView?.({ block: "nearest" });
+      errorRef.current?.focus();
+    }
+  }, [error]);
+  const run = async (fn: () => Promise<Snapshot>, connectedEmail?: string) => {
+    if (active.current) return;
+    active.current = true;
     setBusy(true);
     setError("");
     try {
-      onUpdate(await fn());
+      const next = await fn();
+      onUpdate(next);
       setReview("");
       setRemove("");
+      if (connectedEmail) {
+        onConnected?.(next, connectedEmail);
+        onClose();
+      }
     } catch (e) {
       setError((e as Error).message);
-      onUpdate(await call<Snapshot>({ op: "snapshot" }));
+      try {
+        onUpdate(await call<Snapshot>({ op: "snapshot" }));
+      } catch {
+        /* Keep the original validation error visible. */
+      }
     } finally {
       setBusy(false);
       setCode("");
       setClientSecret("");
+      active.current = false;
     }
   };
+  const changePreference = (patch: Partial<Preferences>) =>
+    void run(() =>
+      call({ op: "preferences", preferences: { ...prefs, ...patch } }),
+    );
   return (
     <Modal
       title="Settings & accounts"
@@ -51,6 +85,25 @@ export function Settings({
       }}
     >
       <div className="settings-body">
+        {busy && (
+          <div className="connection-progress" role="status">
+            Working…{" "}
+            {clientId
+              ? "Validating your Zoho connection. This can take a few seconds."
+              : "Applying your change."}
+          </div>
+        )}
+        {error && (
+          <div ref={errorRef} tabIndex={-1} role="alert" className="error-box">
+            <strong>Could not complete this action</strong>
+            <p>{error}</p>
+          </div>
+        )}
+        {feedback && (
+          <div role="status" className="notice">
+            {feedback}
+          </div>
+        )}
         <div className="setting-row">
           <div>
             <strong>Appearance</strong>
@@ -60,6 +113,127 @@ export function Settings({
             {dark ? "Use light theme" : "Use dark theme"}
           </button>
         </div>
+        <h3>Mail checks & notifications</h3>
+        <div className="setting-row">
+          <div>
+            <strong>Check for new mail automatically</strong>
+            <p>While connected, including when the window is hidden.</p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Automatic mail checks"
+            checked={prefs.automaticChecks}
+            disabled={busy}
+            onChange={(e) =>
+              changePreference({ automaticChecks: e.target.checked })
+            }
+          />
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Check interval</strong>
+            <p>
+              Accounts share Zoho’s request limit; busy sweeps may take longer.
+            </p>
+          </div>
+          <select
+            aria-label="Mail check interval"
+            value={prefs.intervalSeconds}
+            disabled={busy}
+            onChange={(e) =>
+              changePreference({
+                intervalSeconds: Number(
+                  e.target.value,
+                ) as Preferences["intervalSeconds"],
+              })
+            }
+          >
+            {[15, 30, 60, 120].map((seconds) => (
+              <option key={seconds} value={seconds}>
+                {seconds} seconds
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Desktop notifications</strong>
+            <p>New mail alerts while you’re working elsewhere.</p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Desktop notifications"
+            checked={prefs.notifications}
+            disabled={busy}
+            onChange={(e) =>
+              changePreference({ notifications: e.target.checked })
+            }
+          />
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Show sender and subject</strong>
+            <p>Turn off to show just the mailbox and message count.</p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Notification previews"
+            checked={prefs.notificationPreviews}
+            disabled={busy}
+            onChange={(e) =>
+              changePreference({ notificationPreviews: e.target.checked })
+            }
+          />
+        </div>
+        <div className="setting-row">
+          <strong>Notification sound</strong>
+          <input
+            type="checkbox"
+            aria-label="Notification sound"
+            checked={prefs.notificationSound}
+            disabled={busy}
+            onChange={(e) =>
+              changePreference({ notificationSound: e.target.checked })
+            }
+          />
+        </div>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() =>
+            void call<string>({ op: "testNotification" })
+              .then((result) =>
+                setFeedback(
+                  typeof result === "string"
+                    ? result
+                    : "Test notification requested.",
+                ),
+              )
+              .catch((e) => setError(e.message))
+          }
+        >
+          Test notification
+        </button>
+        {snapshot.demo && (
+          <button
+            className="text-button"
+            onClick={() =>
+              void call({ op: "demoArrival" })
+                .then(() =>
+                  setFeedback(
+                    "A fictional message arrived in the Studio mailbox.",
+                  ),
+                )
+                .catch((e) => setError(e.message))
+            }
+          >
+            Simulate new mail
+          </button>
+        )}
+        <p className="muted">
+          Closing or minimizing the Windows app keeps it in the system tray.
+          Right-click its icon and choose Exit Fluent Mail to quit.
+        </p>
         <h3>Your accounts</h3>
         {snapshot.demo ? (
           <p className="notice">
@@ -122,8 +296,10 @@ export function Settings({
               className="primary"
               disabled={busy}
               onClick={() =>
-                void run(() =>
-                  call({ op: "resume", profileId: review, reviewed: true }),
+                void run(
+                  () =>
+                    call({ op: "resume", profileId: review, reviewed: true }),
+                  snapshot.profiles.find((p) => p.id === review)?.email,
                 )
               }
             >
@@ -201,15 +377,17 @@ export function Settings({
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                void run(() =>
-                  call({
-                    op: "connect",
-                    email,
-                    region,
-                    clientId,
-                    clientSecret,
-                    code,
-                  }),
+                void run(
+                  () =>
+                    call({
+                      op: "connect",
+                      email,
+                      region,
+                      clientId,
+                      clientSecret,
+                      code,
+                    }),
+                  email,
                 );
               }}
             >
@@ -281,14 +459,9 @@ export function Settings({
             </form>
           </>
         )}
-        {error && (
-          <div role="alert" className="error-box">
-            {error}
-          </div>
-        )}
         <p className="fine-print">
-          Fluent Mail · Independent client for Zoho Mail · No automatic mail
-          polling
+          Fluent Mail · Independent client for Zoho Mail · Automatic checks
+          start after you connect
         </p>
       </div>
     </Modal>

@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Send, Save, X, FileText } from "lucide-react";
+import {
+  Paperclip,
+  Send,
+  Save,
+  X,
+  FileText,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { Modal } from "./Modal";
 import { call } from "./api";
-import { mailPlainText } from "./sanitize";
+import { mailPlainText, cleanEditorHtml } from "./sanitize";
+import { textToHtml } from "./htmlPolicy";
+import { RichEditor } from "./RichEditor";
+import { Recipients } from "./Recipients";
+import { registerDraftFlush } from "./draftFlush";
 import {
   type Account,
   type Compose,
@@ -23,7 +35,18 @@ export function Composer({
   onClose: () => void;
   onSent: () => void;
 }) {
-  const [c, setC] = useState(initial);
+  const [c, setC] = useState<Compose>(() => ({
+    ...initial,
+    format: "html",
+    body:
+      initial.format === "html"
+        ? cleanEditorHtml(initial.body)
+        : textToHtml(initial.body),
+  }));
+  const [expanded, setExpanded] = useState(false);
+  const [editorRevision, setEditorRevision] = useState(0);
+  const [showCc, setShowCc] = useState(!!initial.cc);
+  const [showBcc, setShowBcc] = useState(!!initial.bcc);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -44,7 +67,7 @@ export function Composer({
       draft.cc.trim() ||
       draft.bcc.trim() ||
       draft.subject.trim() ||
-      draft.body.trim() ||
+      mailPlainText(draft.body).trim() ||
       draft.attachments.length
     );
   useEffect(() => {
@@ -60,6 +83,18 @@ export function Composer({
     }, 600);
     return () => clearTimeout(timer);
   }, [c]);
+  useEffect(
+    () =>
+      registerDraftFlush(async () => {
+        if (sending.current)
+          throw new Error(
+            "Wait for the current message operation before exiting.",
+          );
+        if (hasContent(latest.current))
+          await call({ op: "saveLocalDraft", ...ref, compose: latest.current });
+      }),
+    [account.id, account.profileId],
+  );
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -116,6 +151,16 @@ export function Composer({
       setError((e as Error).message);
     }
   };
+  const reviewSend = () => {
+    try {
+      validateRecipients(c, account.aliases);
+      setError("");
+      setReview(true);
+      setDiscard(false);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   return (
     <Modal
       title={
@@ -126,18 +171,28 @@ export function Composer({
             : "New message"
       }
       wide
+      maximized={expanded}
+      headerActions={
+        <button
+          className="icon-button"
+          aria-label={expanded ? "Restore composer size" : "Maximize composer"}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+        </button>
+      }
       onClose={() => void close()}
     >
       <form
         className="compose"
         onSubmit={(e) => {
           e.preventDefault();
-          try {
-            validateRecipients(c, account.aliases);
-            setError("");
-            setReview(true);
-          } catch (e) {
-            setError((e as Error).message);
+          reviewSend();
+        }}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            if (!busy) reviewSend();
           }
         }}
       >
@@ -154,13 +209,35 @@ export function Composer({
               ))}
             </select>
           </label>
-          {(["to", "cc", "bcc"] as const).map((field) => (
+          <div className="recipient-toggles">
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => setShowCc((v) => !v)}
+            >
+              Cc
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => setShowBcc((v) => !v)}
+            >
+              Bcc
+            </button>
+          </div>
+          {(
+            [
+              "to",
+              ...(showCc || c.cc ? ["cc" as const] : []),
+              ...(showBcc || c.bcc ? ["bcc" as const] : []),
+            ] as const
+          ).map((field) => (
             <label className="inline-field" key={field}>
               <span>
                 {field === "to" ? "To" : field === "cc" ? "Cc" : "Bcc"}
               </span>
-              <input
-                aria-label={
+              <Recipients
+                label={
                   field === "to"
                     ? "To recipients"
                     : field === "cc"
@@ -169,10 +246,7 @@ export function Composer({
                 }
                 disabled={busy}
                 value={c[field]}
-                onChange={(e) => patch({ [field]: e.target.value })}
-                placeholder={
-                  field === "to" ? "Email addresses, separated by commas" : ""
-                }
+                onChange={(value) => patch({ [field]: value })}
               />
             </label>
           ))}
@@ -186,13 +260,12 @@ export function Composer({
             />
           </label>
         </div>
-        <textarea
-          className="compose-body"
-          aria-label="Message body"
-          placeholder="Write your message…"
+        <RichEditor
           disabled={busy}
           value={c.body}
-          onChange={(e) => patch({ body: e.target.value })}
+          externalRevision={editorRevision}
+          onChange={(body) => patch({ body, format: "html" })}
+          onNotice={setStatus}
         />
         <div className="compose-attachments">
           {c.attachments.map((a, i) => (
@@ -262,6 +335,17 @@ export function Composer({
         )}
         {review && (
           <div className="send-review">
+            {!c.subject.trim() && (
+              <p className="compose-reminder">This message has no subject.</p>
+            )}
+            {!c.attachments.length &&
+              /\b(attach(?:ed|ment)?|enclosed)\b/i.test(
+                mailPlainText(c.body.split("<blockquote")[0]),
+              ) && (
+                <p className="compose-reminder">
+                  You mentioned an attachment, but no file is attached.
+                </p>
+              )}
             <strong>
               {demo ? "Simulate sending" : "Send this message"}
               {c.schedule !== "now" ? " later" : ""}?
@@ -371,10 +455,12 @@ export function Composer({
                 defaultValue=""
                 onChange={(e) => {
                   const s = signatures.find((s) => s.id === e.target.value);
-                  if (s)
+                  if (s) {
                     patch({
-                      body: c.body + "\n\n" + mailPlainText(s.content),
+                      body: c.body + "<p></p>" + cleanEditorHtml(s.content),
                     });
+                    setEditorRevision((r) => r + 1);
+                  }
                   e.target.value = "";
                 }}
               >
@@ -389,8 +475,15 @@ export function Composer({
           </div>
         </footer>
         <div className="compose-status">
-          {busy ? "Working…" : status || "Plain-text message"}
-          <span>Attachments upload only when sending or saving to Zoho.</span>
+          {busy
+            ? "Working…"
+            : status || "Rich-text message · Ctrl+Enter to review"}
+          <span>
+            {c.attachments.length
+              ? `${(c.attachments.reduce((n, a) => n + a.size, 0) / 1024 / 1024).toFixed(1)} MB of 20 MB · `
+              : ""}
+            Files upload on send or cloud-save.
+          </span>
           <button
             type="button"
             className="discard-link"

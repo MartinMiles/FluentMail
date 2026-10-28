@@ -96,7 +96,34 @@ export type Snapshot = {
   demo: boolean;
   profiles: Profile[];
   accounts: Account[];
+  preferences?: Preferences;
 };
+export const preferencesSchema = z.object({
+  automaticChecks: z.boolean().default(true),
+  intervalSeconds: z
+    .union([z.literal(15), z.literal(30), z.literal(60), z.literal(120)])
+    .default(15),
+  notifications: z.boolean().default(true),
+  notificationPreviews: z.boolean().default(true),
+  notificationSound: z.boolean().default(false),
+});
+export type Preferences = z.infer<typeof preferencesSchema>;
+export const DEFAULT_PREFERENCES: Preferences = preferencesSchema.parse({});
+export type InboxUpdate = {
+  account: Account;
+  messages: Message[];
+  hasMore: boolean;
+  checkedAt: number;
+  fresh: Message[];
+  catchUpLimited: boolean;
+};
+export type AppEvent =
+  | { type: "inbox"; update: InboxUpdate }
+  | { type: "connection"; snapshot: Snapshot; error?: string }
+  | { type: "open-message"; account: Account; message: Message }
+  | { type: "about" }
+  | { type: "prepare-exit"; requestId: string }
+  | { type: "notice"; message: string };
 export type ListResult = { messages: Message[]; hasMore: boolean };
 export type Result<T = unknown> =
   { ok: true; value: T } | { ok: false; error: string; paused?: boolean };
@@ -111,6 +138,7 @@ export const composeSchema = z.object({
   bcc: text,
   subject: z.string().max(998),
   body: z.string().max(2_000_000),
+  format: z.enum(["plaintext", "html"]).optional(),
   attachments: z
     .array(z.object({ id, name: text, size: z.number().nonnegative() }))
     .max(20),
@@ -122,6 +150,15 @@ export type Compose = z.infer<typeof composeSchema>;
 export const commandSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("snapshot") }),
   z.object({ op: z.literal("demo") }),
+  z.object({ op: z.literal("preferences"), preferences: preferencesSchema }),
+  z.object({ op: z.literal("checkNow") }),
+  z.object({ op: z.literal("testNotification") }),
+  z.object({
+    op: z.literal("quitReady"),
+    requestId: id,
+    error: z.string().max(500).optional(),
+  }),
+  z.object({ op: z.literal("demoArrival") }),
   z.object({
     op: z.literal("connect"),
     email: z.email(),
@@ -226,6 +263,7 @@ export const commandSchema = z.discriminatedUnion("op", [
 export type Command = z.infer<typeof commandSchema>;
 export interface Bridge {
   invoke(command: Command): Promise<Result>;
+  onEvent?(listener: (event: AppEvent) => void): () => void;
 }
 declare global {
   interface Window {

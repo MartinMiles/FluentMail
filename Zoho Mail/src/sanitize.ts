@@ -1,4 +1,20 @@
 import DOMPurify from "dompurify";
+import { MAIL_TAGS, safeStyles, validMailLink } from "./htmlPolicy";
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "style") {
+    data.attrValue = safeStyles(data.attrValue);
+    if (!data.attrValue) data.keepAttr = false;
+  }
+  if (data.attrName === "href" && !validMailLink(data.attrValue))
+    data.keepAttr = false;
+});
+export function cleanEditorHtml(html: string) {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: MAIL_TAGS,
+    ALLOWED_ATTR: ["href", "style", "colspan", "rowspan", "start"],
+    ALLOW_DATA_ATTR: false,
+  });
+}
 export function cleanText(value: string) {
   const doc = new DOMParser().parseFromString(value, "text/html");
   return doc.body.textContent || "";
@@ -73,7 +89,7 @@ export function safeMail(html: string, dark = false) {
       "hr",
       "a",
     ],
-    ALLOWED_ATTR: ["href", "colspan", "rowspan"],
+    ALLOWED_ATTR: ["href", "colspan", "rowspan", "style"],
     ALLOW_DATA_ATTR: false,
   });
   const doc = new DOMParser().parseFromString(clean, "text/html");

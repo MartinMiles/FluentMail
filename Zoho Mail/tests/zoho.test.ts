@@ -28,6 +28,20 @@ function setup() {
 }
 const ref = { accountId: "100", profileId: "p" };
 describe("documented mail operations", () => {
+  it("sends sanitized rich HTML using the documented html format", async () => {
+    const { mail, request } = setup();
+    const c = {
+      ...blankCompose("alex@example.test"),
+      format: "html" as const,
+      to: "jamie@example.test",
+      body: '<p><strong>Hello</strong><img src="https://tracker.test"><script>bad()</script></p>',
+    };
+    await mail.send("100", c, []);
+    expect(request.mock.calls[0][2]).toMatchObject({
+      mailFormat: "html",
+      content: "<p><strong>Hello</strong></p>",
+    });
+  });
   it("discovers several authorized mailboxes without treating aliases as separate inboxes", async () => {
     const { mail, request } = setup();
     request.mockResolvedValueOnce([

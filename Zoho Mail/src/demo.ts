@@ -10,9 +10,41 @@ import {
   PAGE_SIZE,
   commandSchema,
   validateRecipients,
+  DEFAULT_PREFERENCES,
+  type Preferences,
+  type AppEvent,
+  type ListResult,
 } from "./shared";
 
 export class DemoMail {
+  preferences: Preferences = { ...DEFAULT_PREFERENCES };
+  private listeners = new Set<(event: AppEvent) => void>();
+  onEvent(listener: (event: AppEvent) => void) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  emit(event: AppEvent) {
+    for (const listener of this.listeners) listener(event);
+  }
+  connectedAccounts() {
+    return this.accounts;
+  }
+  isConnected(_profileId: string) {
+    return true;
+  }
+  isBusy() {
+    return false;
+  }
+  async pollInbox(account: Account, start = 1): Promise<ListResult> {
+    return this.execute({
+      op: "list",
+      profileId: account.profileId,
+      accountId: account.id,
+      folderId: "1",
+      filter: "all",
+      start,
+    }) as Promise<ListResult>;
+  }
   readonly accounts: Account[] = [
     {
       id: "100",
@@ -218,6 +250,69 @@ export class DemoMail {
     }
   }
   async execute(c: Command): Promise<unknown> {
+    if (c.op === "preferences") {
+      this.preferences = c.preferences;
+      return this.execute({ op: "snapshot" });
+    }
+    if (c.op === "testNotification") {
+      this.emit({
+        type: "notice",
+        message: "Demo notification: new mail notification preview.",
+      });
+      return true;
+    }
+    if (c.op === "quitReady") return true;
+    if (c.op === "demoArrival") {
+      const account = this.accounts[2];
+      const id = crypto.randomUUID();
+      const m = {
+        ...this.messages[0],
+        id,
+        profileId: account.profileId,
+        accountId: account.id,
+        to: account.email,
+        sender: "Studio partner",
+        from: "partner@studio.example.test",
+        subject: "New arrival — automatic inbox update",
+        summary: "This message arrived while you were working.",
+        time: Date.now(),
+        unread: true,
+        hasAttachment: false,
+      };
+      this.messages.push(m);
+      this.details.set(id, {
+        html: "<p>A new offline message arrived. Your selected message and draft stay in place.</p>",
+        attachments: [],
+      });
+      const result = await this.pollInbox(account);
+      this.emit({
+        type: "inbox",
+        update: {
+          account,
+          ...result,
+          checkedAt: Date.now(),
+          fresh: [m],
+          catchUpLimited: false,
+        },
+      });
+      return true;
+    }
+    if (c.op === "checkNow") {
+      for (const account of this.accounts) {
+        const result = await this.pollInbox(account);
+        this.emit({
+          type: "inbox",
+          update: {
+            account,
+            ...result,
+            checkedAt: Date.now(),
+            fresh: [],
+            catchUpLimited: false,
+          },
+        });
+      }
+      return true;
+    }
     if (this.failNext) {
       this.failNext = false;
       throw new Error(
@@ -227,6 +322,7 @@ export class DemoMail {
     if (c.op === "snapshot" || c.op === "demo")
       return {
         demo: true,
+        preferences: this.preferences,
         profiles: [
           {
             id: "demo",
@@ -412,13 +508,15 @@ export class DemoMail {
         this.messages.push(m);
         this.details.set(id, {
           html:
-            "<p>" +
-            c.compose.body
-              .replaceAll("&", "&amp;")
-              .replaceAll("<", "&lt;")
-              .replaceAll(">", "&gt;")
-              .replaceAll("\n", "<br>") +
-            "</p>",
+            c.compose.format === "html"
+              ? c.compose.body
+              : "<p>" +
+                c.compose.body
+                  .replaceAll("&", "&amp;")
+                  .replaceAll("<", "&lt;")
+                  .replaceAll(">", "&gt;")
+                  .replaceAll("\n", "<br>") +
+                "</p>",
           attachments: [],
         });
         return { messageId: id };

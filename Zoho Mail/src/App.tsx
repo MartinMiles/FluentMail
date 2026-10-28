@@ -30,8 +30,9 @@ import {
   Download,
   PanelLeft,
   Keyboard,
+  Info,
 } from "lucide-react";
-import { call } from "./api";
+import { call, subscribe } from "./api";
 import {
   type Snapshot,
   type Account,
@@ -45,8 +46,20 @@ import {
   PAGE_SIZE,
   blankCompose,
   addresses,
+  DEFAULT_PREFERENCES,
+  type AppEvent,
 } from "./shared";
-import { cleanText, safeMail, mailPlainText } from "./sanitize";
+import {
+  cleanText,
+  safeMail,
+  mailPlainText,
+  cleanEditorHtml,
+} from "./sanitize";
+import { escapeHtml } from "./htmlPolicy";
+import { APP_INFO } from "./version";
+import { About } from "./About";
+import { flushActiveDraft } from "./draftFlush";
+import { mergeInboxUpdate } from "./inboxUpdates";
 import { Settings } from "./Settings";
 import { Composer } from "./Composer";
 import { Modal } from "./Modal";
@@ -155,6 +168,16 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [about, setAbout] = useState(false);
+  const [lastChecked, setLastChecked] = useState(0);
+  const eventHandler = useRef<(event: AppEvent) => Promise<void>>(
+    async () => {},
+  );
+  const pendingOpen = useRef<{ account: Account; message: Message } | null>(
+    null,
+  );
+  const previousListScope = useRef("");
+  const prefs = snapshot.preferences || DEFAULT_PREFERENCES;
   const [compose, setCompose] = useState<{
     account: Account;
     value: Compose;
@@ -228,6 +251,77 @@ export default function App() {
     )
       setKey(s.accounts[0] ? accountKey(s.accounts[0]) : "");
   };
+  eventHandler.current = async (event) => {
+    if (event.type === "prepare-exit") {
+      try {
+        await flushActiveDraft();
+        await call({ op: "quitReady", requestId: event.requestId });
+      } catch {
+        await call({
+          op: "quitReady",
+          requestId: event.requestId,
+          error: "Draft could not be saved.",
+        });
+      }
+      return;
+    }
+    if (event.type === "about") {
+      setAbout(true);
+      return;
+    }
+    if (event.type === "notice") {
+      setToast(event.message);
+      return;
+    }
+    if (event.type === "connection") {
+      setSnapshot(event.snapshot);
+      if (event.error) setError(event.error);
+      return;
+    }
+    if (event.type === "open-message") {
+      pendingOpen.current = { account: event.account, message: event.message };
+      setKey(accountKey(event.account));
+      setQuery("");
+      setQueryInput("");
+      setFilter("all");
+      setStart(1);
+      setRefresh((r) => r + 1);
+      return;
+    }
+    if (event.type === "inbox") {
+      const u = event.update;
+      setLastChecked(u.checkedAt);
+      if (u.catchUpLimited)
+        setToast(
+          "A large batch of mail arrived. Open the mailbox to review older arrivals.",
+        );
+      else if (u.fresh.length)
+        setToast(
+          `${u.fresh.length} new message${u.fresh.length === 1 ? "" : "s"} · ${u.account.email}`,
+        );
+      if (
+        !loading &&
+        !busy &&
+        !query &&
+        filter === "all" &&
+        start === 1 &&
+        (unified ||
+          (account &&
+            key === accountKey(u.account) &&
+            folder?.path.toLowerCase() === "/inbox"))
+      ) {
+        setMessages((current) => mergeInboxUpdate(current, u, unified));
+        if (!unified) setHasMore(u.hasMore);
+      }
+    }
+  };
+  useEffect(
+    () =>
+      subscribe((event) => {
+        void eventHandler.current(event);
+      }),
+    [],
+  );
   useEffect(() => {
     let active = true;
     void call<Snapshot>({ op: "snapshot" })
@@ -268,7 +362,6 @@ export default function App() {
     setQuery("");
     setQueryInput("");
     setStart(1);
-    setError("");
     if (!ref || !connected) return;
     setLoading(true);
     void (async () => {
@@ -315,11 +408,15 @@ export default function App() {
   useEffect(() => {
     if (!ref || loadedFor !== key || !connected) return;
     const generation = ++listGeneration.current;
+    const scope = [key, view, filter, query, start].join("|");
+    const scopeChanged = previousListScope.current !== scope;
+    previousListScope.current = scope;
     setLoading(true);
-    setSelected("");
-    setDetail(null);
-    setChecked([]);
-    setError("");
+    if (scopeChanged) {
+      setSelected("");
+      setDetail(null);
+      setChecked([]);
+    }
     if (unified) {
       void (async () => {
         try {
@@ -380,7 +477,16 @@ export default function App() {
     void call<ListResult>(cmd)
       .then((r) => {
         if (generation === listGeneration.current) {
-          setMessages(r.messages);
+          const pending = pendingOpen.current;
+          if (pending && accountKey(pending.account) === key) {
+            setMessages(
+              r.messages.some((m) => m.id === pending.message.id)
+                ? r.messages
+                : [pending.message, ...r.messages],
+            );
+            setSelected(pending.message.id);
+            pendingOpen.current = null;
+          } else setMessages(r.messages);
           setHasMore(r.hasMore);
         }
       })
@@ -536,15 +642,21 @@ export default function App() {
     if (mode === "edit") {
       c.to = addresses(message.to).join(", ");
       c.cc = addresses(message.cc).join(", ");
-      c.body = mailPlainText(detail.html);
-    } else
+      c.format = "html";
+      c.body = cleanEditorHtml(detail.html);
+    } else {
+      c.format = "html";
       c.body =
-        "\n\n" +
-        (mode === "forward"
-          ? "---------- Forwarded message ----------"
-          : `On ${time(message.time)}, ${message.from} wrote:`) +
-        "\n" +
-        mailPlainText(detail.html);
+        "<p></p><blockquote><p>" +
+        escapeHtml(
+          mode === "forward"
+            ? "---------- Forwarded message ----------"
+            : `On ${time(message.time)}, ${message.from} wrote:`,
+        ) +
+        "</p>" +
+        cleanEditorHtml(detail.html) +
+        "</blockquote>";
+    }
     if (message.hasAttachment && (mode === "forward" || mode === "edit"))
       setToast(
         "Reattach any files you want to include; original attachments are not copied automatically.",
@@ -579,6 +691,7 @@ export default function App() {
     const listener = (e: KeyboardEvent) => {
       if (
         settings ||
+        about ||
         compose ||
         headers !== null ||
         help ||
@@ -681,6 +794,9 @@ export default function App() {
           </Tool>
           <Tool title="Settings" onClick={() => setSettings(true)}>
             <SettingsIcon size={20} />
+          </Tool>
+          <Tool title="About Fluent Mail" onClick={() => setAbout(true)}>
+            <Info size={20} />
           </Tool>
           <span className="header-avatar">
             {account ? initials(account.name) : "FM"}
@@ -917,7 +1033,13 @@ export default function App() {
                   className={"connection-dot " + (connected ? "online" : "")}
                 />
                 <span>
-                  {connected ? "Up to date on refresh" : "Disconnected"}
+                  {connected
+                    ? lastChecked
+                      ? "Checked " + shortTime(lastChecked)
+                      : prefs.automaticChecks
+                        ? "Automatic checks on"
+                        : "Checks paused"
+                    : "Disconnected"}
                 </span>
                 <Tool
                   title="Refresh mail"
@@ -1442,15 +1564,20 @@ export default function App() {
         {snapshot.demo
           ? "Offline demo — fictional messages, no network access"
           : connected
-            ? "Connected · manual refresh"
+            ? prefs.automaticChecks
+              ? `Connected · automatic checks every ${prefs.intervalSeconds}s`
+              : "Connected · automatic checks paused"
             : "Ready · no account traffic"}
-        <span className="status-end">
+        <button
+          className="status-end status-about"
+          onClick={() => setAbout(true)}
+        >
           {busy
             ? "Working…"
             : snapshot.demo
-              ? "Explore freely"
-              : "Fluent Mail for Windows"}
-        </span>
+              ? `Fluent Mail ${APP_INFO.version} · Demo`
+              : `Fluent Mail ${APP_INFO.version}`}
+        </button>
       </footer>
       {toast && (
         <div className="toast" role="status">
@@ -1471,8 +1598,22 @@ export default function App() {
           onClose={() => setSettings(false)}
           dark={dark}
           onTheme={() => setDark((d) => !d)}
+          onConnected={(s, email) => {
+            const a = s.accounts.find(
+              (a) =>
+                a.email.toLowerCase() === email.toLowerCase() ||
+                a.aliases.some(
+                  (alias) => alias.toLowerCase() === email.toLowerCase(),
+                ),
+            );
+            if (a) setKey(accountKey(a));
+            setToast(
+              `Connected ${email}. Your inbox is loading and automatic checks are ready.`,
+            );
+          }}
         />
       )}
+      {about && <About onClose={() => setAbout(false)} />}
       {senderChoice && (
         <Modal
           title="Send from which mailbox?"

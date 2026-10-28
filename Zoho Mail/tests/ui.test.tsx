@@ -7,17 +7,42 @@ import {
   cleanup,
   within,
   fireEvent,
+  act,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DemoMail } from "../src/demo";
-import type { Command } from "../src/shared";
-const { mockCall } = vi.hoisted(() => ({ mockCall: vi.fn() }));
-vi.mock("../src/api", () => ({ call: mockCall }));
+import {
+  type Command,
+  type Snapshot,
+  DEFAULT_PREFERENCES,
+} from "../src/shared";
+import { APP_INFO } from "../src/version";
+const { mockCall, mockSubscribe } = vi.hoisted(() => ({
+  mockCall: vi.fn(),
+  mockSubscribe: vi.fn(),
+}));
+vi.mock("../src/api", () => ({ call: mockCall, subscribe: mockSubscribe }));
 import App from "../src/App";
 let backend: DemoMail;
 beforeEach(() => {
   localStorage.clear();
   backend = new DemoMail();
+  mockSubscribe.mockImplementation((listener) => backend.onEvent(listener));
+  // JSDOM has no layout. Supply geometry used by ProseMirror's caret/scroll handling.
+  Range.prototype.getBoundingClientRect = () => ({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    toJSON: () => ({}),
+  });
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  HTMLElement.prototype.scrollIntoView = () => {};
+  document.elementFromPoint = () => document.body;
   mockCall.mockReset();
   mockCall.mockImplementation(async (c: Command) => {
     const r = await backend.invoke(c);
@@ -34,6 +59,159 @@ async function inbox() {
   return userEvent.setup();
 }
 describe("offline inbox workflows", () => {
+  it("shows the creator and package version in About", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: "About Fluent Mail" }));
+    const about = screen.getByRole("dialog", { name: "About Fluent Mail" });
+    expect(about.textContent).toContain(APP_INFO.version);
+    expect(about.textContent).toContain("Martin Miles");
+    expect(about.textContent).toContain("martin@safetyfluent.com");
+  });
+  it("updates the unified inbox without closing the current message or draft", async () => {
+    const user = await inbox();
+    await user.selectOptions(
+      screen.getByLabelText("Switch mailbox"),
+      "unified",
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    );
+    await screen.findByTitle("Email content");
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await screen.findByRole("dialog", { name: "Reply" });
+    const before = screen.getByLabelText("Message body").textContent;
+    await act(async () => {
+      await backend.invoke({ op: "demoArrival" });
+    });
+    expect(screen.getByRole("dialog", { name: "Reply" })).toBeTruthy();
+    expect(screen.getByLabelText("Message body").textContent).toBe(before);
+    expect(
+      screen.getByRole("button", {
+        name: "Open New arrival — automatic inbox update",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByTitle("Email content")).toBeTruthy();
+  });
+  it("flushes an unsaved rich draft before acknowledging an explicit exit", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(
+      screen.getByLabelText("Message body"),
+      "Exit should save this",
+    );
+    await act(async () =>
+      backend.emit({ type: "prepare-exit", requestId: "fixture-exit" }),
+    );
+    await waitFor(() =>
+      expect(
+        mockCall.mock.calls.some(
+          ([c]) =>
+            c.op === "quitReady" && c.requestId === "fixture-exit" && !c.error,
+        ),
+      ).toBe(true),
+    );
+    expect(
+      [...backend.drafts.values()].some((d) =>
+        d.body.includes("Exit should save this"),
+      ),
+    ).toBe(true);
+  });
+  it("closes Settings and selects the newly connected mailbox on success", async () => {
+    let live: Snapshot = {
+      demo: false,
+      profiles: [],
+      accounts: [],
+      preferences: DEFAULT_PREFERENCES,
+    };
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) => {
+      if (c.op === "snapshot") return live;
+      if (c.op === "connect") {
+        live = {
+          ...live,
+          profiles: [
+            {
+              id: "demo",
+              email: c.email,
+              region: "US",
+              connected: true,
+              paused: null,
+            },
+          ],
+          accounts: [backend.accounts[0]],
+        };
+        return live;
+      }
+      return normal(c);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Connect your Zoho account" }),
+    );
+    await user.type(
+      screen.getByLabelText("Mailbox email"),
+      "alex@example.test",
+    );
+    await user.type(screen.getByLabelText("Client ID"), "fixture-client");
+    await user.type(screen.getByLabelText("Client secret"), "fixture-secret");
+    await user.type(
+      screen.getByLabelText("Fresh authorization code"),
+      "fixture-code",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Connect new account" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Settings & accounts" }),
+      ).toBeNull(),
+    );
+    expect(await screen.findByText(/Connected alex@example.test/)).toBeTruthy();
+    expect(
+      mockCall.mock.calls.filter(([c]) => c.op === "connect"),
+    ).toHaveLength(1);
+  });
+  it("keeps failed connection feedback visible without automatically retrying", async () => {
+    mockCall.mockImplementation(async (c: Command) => {
+      if (c.op === "snapshot")
+        return { demo: false, profiles: [], accounts: [] };
+      if (c.op === "connect") throw new Error("The fixture code was rejected.");
+      throw new Error("Unexpected fixture command");
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Connect your Zoho account" }),
+    );
+    await user.type(
+      screen.getByLabelText("Mailbox email"),
+      "alex@example.test",
+    );
+    await user.type(screen.getByLabelText("Client ID"), "fixture-client");
+    await user.type(screen.getByLabelText("Client secret"), "fixture-secret");
+    await user.type(
+      screen.getByLabelText("Fresh authorization code"),
+      "fixture-code",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Connect new account" }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "fixture code was rejected",
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Settings & accounts" }),
+    ).toBeTruthy();
+    expect(
+      mockCall.mock.calls.filter(([c]) => c.op === "connect"),
+    ).toHaveLength(1);
+  });
   it("loads a safe reading pane and replies to the correct sender", async () => {
     const user = await inbox();
     await user.click(
@@ -49,9 +227,8 @@ describe("offline inbox workflows", () => {
     await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Reply" });
     expect(
-      (within(dialog).getByLabelText("To recipients") as HTMLInputElement)
-        .value,
-    ).toBe("jamie@example.test");
+      within(dialog).getByLabelText("To recipients").parentElement?.textContent,
+    ).toContain("jamie@example.test");
     expect(
       (within(dialog).getByLabelText("Subject") as HTMLInputElement).value,
     ).toBe("Re: A little breathing room for your inbox");
@@ -131,14 +308,14 @@ describe("offline inbox workflows", () => {
     await user.click(screen.getByRole("button", { name: "Review & send" }));
     await user.click(screen.getByRole("button", { name: "Confirm demo send" }));
     await screen.findByRole("alert");
-    expect(
-      (screen.getByLabelText("Message body") as HTMLTextAreaElement).value,
-    ).toBe("Do not lose this draft");
+    expect(screen.getByLabelText("Message body").textContent).toBe(
+      "Do not lose this draft",
+    );
     await waitFor(() =>
       expect(
         [...backend.drafts.values()].find((d) => d.from === "alex@example.test")
           ?.body,
-      ).toBe("Do not lose this draft"),
+      ).toContain("Do not lose this draft"),
     );
   });
   it("moves selected messages to Trash and can restore them", async () => {
@@ -284,7 +461,7 @@ describe("offline inbox workflows", () => {
         [...backend.drafts.values()].find(
           (d) => d.from === "alex@studio.example.test",
         )?.body,
-      ).toBe("Studio-only draft"),
+      ).toContain("Studio-only draft"),
     );
     expect(
       [...backend.drafts.values()].find((d) => d.from === "alex@example.test"),
@@ -305,8 +482,8 @@ describe("offline inbox workflows", () => {
     await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
     await screen.findByRole("dialog", { name: "Reply" });
     expect(
-      (screen.getByLabelText("To recipients") as HTMLInputElement).value,
-    ).toBe("help@example.test");
+      screen.getByLabelText("To recipients").parentElement?.textContent,
+    ).toContain("help@example.test");
   });
   it("ignores a stale message-body response after switching mailboxes", async () => {
     const user = await inbox();
