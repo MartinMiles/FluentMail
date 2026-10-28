@@ -100,6 +100,12 @@ Before a future assistant-led live check, get explicit owner approval naming one
 
 ## Resume checklist
 
+### Setup clarification recorded 2026-10-28
+
+The owner found “Fresh authorization code” unclear. It means the code created in **API Console → existing Self Client → Generate Code**, not Client Secret. The official [authorization-code flow](https://www.zoho.com/developer/oauth/self-client/authorization-code-flow.html) specifies: enter comma-separated scopes, select code expiry (default 3 minutes), provide a description, click CREATE; if prompted select the app/portal and click CREATE again. Copy the displayed code directly into Fluent Mail and connect within that expiry period. Fluent Mail performs the token exchange; the owner should not manually call token endpoints or paste credentials into chat. Future setup help should provide these exact navigation steps instead of merely saying “generate a fresh code.” No live authentication was attempted for this clarification.
+
+The owner also requires the full executable path whenever delivering or identifying the executable: `C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.0.0-Windows-x64.exe`.
+
 1. Read this file, then AGENTS.md and the current test report. Check Git status before editing.
 2. Use the source map and API coverage record to answer known questions. Research only a material gap/change, and record the result here.
 3. Run `npm ci` if needed; `npm run check`, `npm test`, `npm run build` for relevant changes. `npm run dev` is a loopback-only synthetic preview. `npm run demo` launches a separate offline desktop mode. `npm run smoke` is hidden, bounded and offline.
