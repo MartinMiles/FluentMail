@@ -1,0 +1,11 @@
+# SafetyFluent workspace
+
+For any work on the Windows mail application, **read `Zoho Mail/PROJECT_CONTEXT.md` first on every return**, then `Zoho Mail/AGENTS.md`. The context file is maintained in source control; update it after meaningful decisions, research, fixes, validation, or changes to blockers. Do not repeat completed research without a specific unresolved question or evidence that it has changed.
+
+The active application is in `Zoho Mail/`. `Legacy/` is a separate pre-existing project/repository; leave it alone unless the user explicitly requests work there.
+
+## Fluent Mail standing authorization — owner instruction 2026-10-28
+
+The owner explicitly superseded per-attempt permission prompts and owner-presence requirements **for this project**: routine account access, OAuth connection/diagnostics and email sending/testing needed to develop and fix Fluent Mail are pre-approved. Do not ask for these approvals again or require the owner to be at the computer. Record meaningful actions/results without secrets, keep each diagnostic bounded and planned, prefer offline fixtures, and stop on security challenges, restrictions, suspension or rate limits. This project-specific authorization does not apply to Legacy or other services/projects and does not authorize publishing credentials/private messages. The source push to safetyfluent/FluentMail is also expressly authorized. Read Zoho Mail/PROJECT_CONTEXT.md for evidence and current scope.
+
+Apply the owner's standing account safeguards, subject to the Fluent Mail authorization above: plan live account work; use fixtures and mocks by default; never treat saved credentials as test fixtures. Outside the project exception, obtain explicit bounded approval naming the account and client/device before a live authentication test, with the owner available. Stop at the first unexplained rejection, challenge, rate limit, suspension or unknown result; do not switch clients/IPs to bypass a restriction. Security restrictions require owner-confirmed recovery. Do not perform password resets, recovery or subscription changes without explicit authorization. Keep credentials, private messages and unrelated account data out of logs, exports, screenshots and source control.
