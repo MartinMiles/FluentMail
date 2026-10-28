@@ -36,6 +36,8 @@ Do not launch the credential-bearing app for inspection. Use `--demo` for every 
 
 Latest executable path to give the owner in full: **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.1.0-Windows-x64.exe`**. Exit the old process before launching the new build, then use the tray Exit action for v1.1. The sections below retain the original research and v1.0 history; where behavior differs, this v1.1 section takes precedence.
 
+Final delivery: both unpacked and portable v1.1 Windows smoke tests passed, including hidden-to-tray and draft-flush Exit. Release source/documentation was committed as `f64fa85`. The owner then explicitly requested “run the exe”; the normal v1.1 executable was launched and its visible window's executable version was confirmed as 1.1.0.0. The assistant did not click Connect or perform live account testing. This launch authorization does not authorize future authentication tests. The demo development server was stopped.
+
 ## Objective and accepted scope
 
 The owner dislikes Zoho's webmail interface and wants a standalone Windows client with a familiar mix of Outlook and Gmail conventions, without another mail subscription. They explicitly chose the documented-API approach, requested the `Zoho Mail` subdirectory, asked for careful planning and testing, and prohibited unnecessary complexity or invented unsupported features.
