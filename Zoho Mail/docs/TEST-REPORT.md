@@ -57,6 +57,7 @@ Screenshots validate the shared renderer, not live Zoho operation. Packaged desk
 7. Initial jsdom engine requirements exceeded installed Node 24.0.0. The test dependency is pinned to compatible jsdom 26.1.0.
 8. A low-severity build-tool advisory was removed by updating esbuild. Final audit is clean.
 9. Electron Builder hit a temporary-directory rename EPERM during extraction. Its built-in copy fallback completed; no unrelated paths or permissions were changed.
+10. Generated package HTML triggered unwanted Vite preview refreshes. Build/output directories are excluded from the development watcher; configuration passed the type check. This development-only adjustment does not alter the tested portable runtime.
 
 ## Not established by these tests
 

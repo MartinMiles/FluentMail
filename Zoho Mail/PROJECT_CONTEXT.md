@@ -77,6 +77,8 @@ The historical SafetyFluent setup in this conversation established three Zoho Ma
 
 Electron 45.1.0 currently warns that synchronous safeStorage methods are deprecated. They work and passed an actual Windows encryption/decryption round trip. Before a future Electron major upgrade, migrate vault I/O deliberately to the async API and re-test; do not change encryption silently or add plaintext fallback.
 
+Final preview cleanup exposed another development-only issue: Vite watched generated release HTML files and refreshed the demo during packaging. Generated release/dist/desktop-dist/test-results directories are now excluded from its watcher. This does not change the packaged runtime. The preview server was stopped after verification; no development server or live collector was left running.
+
 ## Validation and current production blocker
 
 Final delivery validation on 2026-10-27: TypeScript and production build passed; **61 tests passed in 5 files**; full dependency audit reported **0 vulnerabilities**. Both the unpacked Windows application and the final portable executable passed isolated demo smoke tests (UI rendered, bridge ready, renderer Node absent, Windows encryption round trip successful). Final portable size is 112,188,737 bytes (~107 MiB). Artifact SHA-256 and detailed coverage are in the test report. Generated binaries are local build artifacts and are not committed to Git.
