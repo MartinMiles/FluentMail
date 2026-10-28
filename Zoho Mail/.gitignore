@@ -5,5 +5,7 @@ release/
 coverage/
 *.log
 .env*
-*.vault
+*.vault*
+settings.local.*
+recipient-history*.json
 test-results/

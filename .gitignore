@@ -1,2 +1,7 @@
 # The old website has its own repository; this repository tracks the new mail client.
 Legacy/
+# Personal state must never enter this source repository, including atomic-save backups.
+.env*
+*.vault*
+settings.local.*
+recipient-history*.json

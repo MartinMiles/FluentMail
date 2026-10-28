@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export const INLINE_DELIVERY_UNAVAILABLE =
+  "To send pasted images, set up Inline images (SMTP) for this mailbox in Settings. Your draft is saved on this PC; nothing was sent.";
+export type SmtpServer = "standard" | "pro";
+export type SmtpStatus = {
+  configured: boolean;
+  server: SmtpServer;
+  paused: string | null;
+  verifiedAt?: number;
+};
+
 export const REGIONS = {
   US: {
     name: "United States",
@@ -70,6 +80,9 @@ export type Message = {
   id: string;
   folderId: string;
   threadId: string;
+  threadCount?: number;
+  threadCountEstimated?: boolean;
+  hasInline?: boolean;
   subject: string;
   sender: string;
   from: string;
@@ -88,6 +101,7 @@ export type Attachment = { id: string; name: string; size: number };
 export type Detail = {
   html: string;
   attachments: Attachment[];
+  imageWarning?: string;
   headers?: string;
 };
 export type Signature = { id: string; name: string; content: string };
@@ -101,6 +115,7 @@ export type Snapshot = {
   profiles: Profile[];
   accounts: Account[];
   preferences?: Preferences;
+  smtp?: Record<string, SmtpStatus>;
 };
 export const preferencesSchema = z.object({
   automaticChecks: z.boolean().default(true),
@@ -181,12 +196,22 @@ export const commandSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("folders"), ...ref }),
   z.object({ op: z.literal("labels"), ...ref }),
   z.object({ op: z.literal("signatures"), ...ref }),
+  z.object({ op: z.literal("recipientHistory"), ...ref }),
+  z.object({
+    op: z.literal("configureSmtp"),
+    ...ref,
+    password: z.string().min(1).max(500),
+    server: z.enum(["standard", "pro"]).default("standard"),
+  }),
+  z.object({ op: z.literal("removeSmtp"), ...ref }),
+  z.object({ op: z.literal("testSmtp"), ...ref }),
   z.object({
     op: z.literal("list"),
     ...ref,
     folderId: z.string().max(100).optional(),
     labelId: z.string().max(100).optional(),
     threadId: z.string().max(100).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
     query: z.string().max(1000).optional(),
     filter: z.enum(["all", "unread", "flagged", "archive"]).default("all"),
     start: z.number().int().min(1).max(1_000_000).default(1),

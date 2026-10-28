@@ -1,5 +1,21 @@
 # API coverage and implementation boundaries
 
+## v1.5: embedded images and conversations
+
+[List emails](https://www.zoho.com/mail/help/api/get-emails-list.html) supports threadedMails, threadCount and threadId. threadedMails is a filter for conversation mail, not a grouping mode; omit it for normal lists so standalone messages remain visible. Conversation membership uses the same endpoint with threadId, includesent=true and includearchive=true, omitting folderId; 40 summaries/page. Grouping never guesses from subjects and always respects the authorization/mailbox boundary. Bodies are fetched only when expanded. Existing message actions remain message-scoped.
+
+[Attachment info](https://www.zoho.com/mail/help/api/get-attach-info.html) with includeInline=true exposes inline[].cid/name/size. [Download inline image](https://www.zoho.com/mail/help/api/inline-image-download.html) is GET /api/accounts/{a}/folders/{f}/messages/{m}/inline?contentId=...&fileName=... under existing messages.READ scope. Match only server-confirmed parts; never send OAuth to a URL supplied by HTML. Embedded raster bytes are validated and passed as memory-only data URIs to the isolated reader. Twenty parts/20 MB combined limit; remote images stay blocked. No subscription, IMAP or scope expansion.
+
+## v1.4: owner-approved SMTP inline sending
+
+Messages with local pasted images use Zoho SMTP with standard CID/MIME inline parts. This is a supported mail protocol, not a new invented Mail API operation. Other sends, receiving and mailbox actions retain the API implementation and existing scopes. SMTP credentials are separate, encrypted and scoped to profile/account. There are no API image uploads/posts on this route. Certificate checks are mandatory, there is no retry/pooling, and live eligibility needs the actual account credential. SMTP Sent copies are normally server-managed; inline messages send now and drafts stay local. See [the resolution](INLINE-IMAGES.md) and [Zoho SMTP configuration](https://www.zoho.com/mail/help/zoho-smtp.html). Earlier API-only scope statements below are historical.
+
+## v1.3 correction — verified behavior
+
+Recipient history seeds one page of Sent through the existing list API and then uses mailbox-scoped encrypted local data; no contact API scope is added. List requests retain folderId but no longer explicitly exclude Sent. Send now and the countdown are local. Del moves to the source mailbox's Trash through the existing move API.
+
+Live tests showed that normally HTML-escaped preview URLs, direct data URI HTML and filename/path CID references did not produce matching inline parts. A later vetted literal-query-separator workaround produced working inline CID images, verified in Gmail, but also ordinary duplicate file attachments. Removing descriptors or supplying an empty list stopped conversion. Production image send/cloud-save remains blocked before upload because the no-duplicate requirement is unresolved; local drafts retain images. The inline-upload primitive keeps regional host/path validation; its internal image-URL account ID need not equal the public API account ID (the official example differs). See [the investigation](INLINE-IMAGES.md). Historical v1.2 claims below are superseded here. No guessed association fields/private endpoints are shipped.
+
 ## v1.2 update
 
 Local clipboard images now upload through the same documented RAW attachment endpoint with `isInline=true`; the returned `url` is validated for region/account and substituted into the matching HTML img source. No CID or new API scope is invented. Regular clipboard files use the normal attachment path. Live external inline-image rendering remains unverified. The five-second Send delay is entirely local and starts no upload/API send until it expires.

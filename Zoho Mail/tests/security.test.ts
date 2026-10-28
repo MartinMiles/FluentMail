@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { safeMail, cleanText, mailPlainText } from "../src/sanitize";
+import {
+  safeMail,
+  cleanText,
+  mailPlainText,
+  cleanEditorHtml,
+} from "../src/sanitize";
 import {
   addresses,
   blankCompose,
@@ -8,6 +13,27 @@ import {
   validateRecipients,
 } from "../src/shared";
 describe("untrusted email rendering", () => {
+  it("allows embedded raster data in a sandbox without enabling remote images", () => {
+    const png = "data:image/png;base64,iVBORw0KGgo=";
+    const safe = safeMail(
+      `<p>Image<img src="${png}" onerror="bad()"><img src="data:image/svg+xml;base64,PHN2Zz4="><img src="https://tracker.test/img"></p>`,
+    );
+    expect(safe.document).toContain(png);
+    expect(safe.document).toContain("img-src data:");
+    expect(safe.document).not.toMatch(/onerror|image\/svg|tracker.test/);
+  });
+  it("does not leave ghost server images in quoted replies while retaining valid local images", () => {
+    const local =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII=";
+    const clean = cleanEditorHtml(
+      '<p>Reply<img src="cid:server-image"><img src="https://tracker.test/pixel"><img src="' +
+        local +
+        '"></p>',
+    );
+    expect(clean).not.toMatch(/cid:|tracker.test/);
+    expect((clean.match(/<img\b/g) || []).length).toBe(1);
+    expect(clean).toContain(local);
+  });
   it("keeps paragraphs and list boundaries readable in replies", () => {
     const text = mailPlainText(
       "<h3>Next steps</h3><ul><li>Review</li><li>Reply</li></ul><p>Thanks<br>Alex</p><script>malicious()</script>",

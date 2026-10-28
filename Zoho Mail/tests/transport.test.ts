@@ -33,6 +33,27 @@ function setup(
   return { transport, save, fetcher: fetchMock };
 }
 describe("Zoho transport contracts and stop conditions", () => {
+  it("identifies a rejected operation without disclosing provider payloads or private query values", async () => {
+    const { transport, fetcher } = setup(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: { code: 400 },
+            data: { errorMessage: "private account information" },
+          }),
+          { status: 400 },
+        ),
+    );
+    await expect(
+      transport.request("/api/accounts/123/folders"),
+    ).rejects.toThrow("folder loading (HTTP 400, API 400)");
+    expect(transport.secret.paused).not.toContain("123");
+    expect(transport.secret.paused).not.toContain("private");
+    await expect(
+      transport.request("/api/accounts/123/folders"),
+    ).rejects.toThrow("No retry");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it("preserves IDs beyond JavaScript integer precision", async () => {
     const { transport } = setup(
       vi.fn(

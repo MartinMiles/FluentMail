@@ -15,6 +15,15 @@ DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
   if (data.attrName === "src" && !validEditorImage(data.attrValue))
     data.keepAttr = false;
 });
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  // Unsupported server image references must not turn a normal quoted reply
+  // into a ghost inline-image draft. Valid local raster data is retained.
+  if (
+    node.nodeName === "IMG" &&
+    !validEditorImage((node as Element).getAttribute("src") || "")
+  )
+    node.parentNode?.removeChild(node);
+});
 export function cleanEditorHtml(html: string) {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: MAIL_TAGS,
@@ -106,8 +115,19 @@ export function safeMail(html: string, dark = false) {
       "th",
       "hr",
       "a",
+      "img",
     ],
-    ALLOWED_ATTR: ["href", "colspan", "rowspan", "style"],
+    ALLOWED_ATTR: [
+      "href",
+      "colspan",
+      "rowspan",
+      "style",
+      "src",
+      "alt",
+      "title",
+      "width",
+      "height",
+    ],
     ALLOW_DATA_ATTR: false,
   });
   const doc = new DOMParser().parseFromString(clean, "text/html");
@@ -127,6 +147,6 @@ export function safeMail(html: string, dark = false) {
     }
     a.removeAttribute("href");
   }
-  const document = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.8 'Segoe UI',sans-serif;color:${dark ? "#dbe2ed" : "#354155"};margin:0;padding:8px 4px;overflow-wrap:anywhere}p{margin:0 0 18px}h1,h2,h3{line-height:1.4;color:${dark ? "#f2f5fa" : "#1b283c"}}h3{font-size:16px;margin:24px 0 12px}a{color:#477bce;text-decoration:underline}blockquote{border-left:3px solid #b4c5de;margin:16px 0;padding:4px 16px}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #b5c2d2;padding:8px}pre{white-space:pre-wrap}ul{padding-left:22px}</style></head><body>${doc.body.innerHTML}</body></html>`;
+  const document = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><style>body{font:15px/1.8 'Segoe UI',sans-serif;color:${dark ? "#dbe2ed" : "#354155"};margin:0;padding:8px 4px;overflow-wrap:anywhere}p{margin:0 0 18px}h1,h2,h3{line-height:1.4;color:${dark ? "#f2f5fa" : "#1b283c"}}h3{font-size:16px;margin:24px 0 12px}a{color:#477bce;text-decoration:underline}blockquote{border-left:3px solid #b4c5de;margin:16px 0;padding:4px 16px}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #b5c2d2;padding:8px}pre{white-space:pre-wrap}ul{padding-left:22px}img{max-width:100%;height:auto;vertical-align:middle}</style></head><body>${doc.body.innerHTML}</body></html>`;
   return { document, links: links.slice(0, 30) };
 }

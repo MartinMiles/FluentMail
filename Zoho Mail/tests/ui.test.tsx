@@ -69,12 +69,424 @@ async function sendAfterGrace() {
 }
 async function inbox() {
   render(<App />);
-  await screen.findByRole("button", {
-    name: "Open A little breathing room for your inbox",
-  });
+  await screen.findByRole(
+    "button",
+    {
+      name: "Open A little breathing room for your inbox",
+    },
+    { timeout: 5000 },
+  );
   return userEvent.setup();
 }
 describe("offline inbox workflows", () => {
+  it("keeps the exact opened-conversation count when a bounded summary scan finishes late", async () => {
+    const normal = mockCall.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    mockCall.mockImplementation(async (c: Command) => {
+      const value = await normal(c);
+      if (c.op === "list" && c.limit === 200 && c.folderId === "2")
+        return new Promise((resolve) => {
+          finish = () => resolve(value);
+        });
+      return value;
+    });
+    const user = await inbox();
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    const row = screen.getByRole("button", {
+      name: "Open A little breathing room for your inbox",
+    });
+    await user.click(row);
+    await screen.findByTitle("Email content");
+    await act(async () => {
+      finish(null);
+    });
+    await waitFor(() =>
+      expect(row.querySelector(".thread-count")?.textContent).toBe("2"),
+    );
+    expect(row.querySelector(".thread-count")?.getAttribute("title")).toBe(
+      "2 messages in conversation",
+    );
+  });
+  it("derives a conversation badge before opening even when Zoho reports zero thread counts", async () => {
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) => {
+      const value = await normal(c);
+      return c.op === "list"
+        ? {
+            ...value,
+            messages: value.messages.map((m: any) => ({
+              ...m,
+              threadCount: 0,
+            })),
+          }
+        : value;
+    });
+    await inbox();
+    const row = screen.getByRole("button", {
+      name: "Open A little breathing room for your inbox",
+    });
+    await waitFor(() =>
+      expect(
+        within(row).getByLabelText("2 messages in conversation"),
+      ).toBeTruthy(),
+    );
+    expect(
+      mockCall.mock.calls.some(
+        ([c]) => c.op === "list" && c.limit === 200 && c.folderId === "2",
+      ),
+    ).toBe(true);
+    expect(mockCall.mock.calls.some(([c]) => c.op === "detail")).toBe(false);
+  });
+  it("shows a compact conversation count and opens its original Sent message with an inline image", async () => {
+    const user = await inbox();
+    const row = screen.getByRole("button", {
+      name: "Open A little breathing room for your inbox",
+    });
+    expect(
+      within(row).getByLabelText("2 messages in conversation"),
+    ).toBeTruthy();
+    await user.click(row);
+    await screen.findByTitle("Email content");
+    expect(screen.getByText("2 messages in this conversation")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+    const original = await screen.findByTitle("Email content from Alex Morgan");
+    expect(original.getAttribute("srcdoc")).toContain("data:image/png;base64,");
+    expect(
+      mockCall.mock.calls.some(
+        ([c]) =>
+          c.op === "detail" && c.folderId === "2" && c.messageId === "900",
+      ),
+    ).toBe(true);
+  });
+  it("saves SMTP credentials for the selected mailbox, clears the field, and does not auto-authenticate", async () => {
+    const normal = mockCall.getMockImplementation()!;
+    const smtp: NonNullable<Snapshot["smtp"]> = {};
+    const snapshot = async () => ({
+      ...(await normal({ op: "snapshot" })),
+      demo: false,
+      smtp,
+    });
+    mockCall.mockImplementation(async (c: Command) => {
+      if (c.op === "snapshot") return snapshot();
+      if (c.op === "configureSmtp") {
+        smtp[c.profileId + ":" + c.accountId] = {
+          configured: true,
+          server: c.server,
+          paused: null,
+        };
+        return snapshot();
+      }
+      return normal(c);
+    });
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const password = screen.getByLabelText(
+      "SMTP/app password",
+    ) as HTMLInputElement;
+    await user.type(password, "discarded-fixture-password");
+    await user.selectOptions(
+      screen.getByLabelText("Mailbox for inline images"),
+      "other-demo:100",
+    );
+    expect(password.value).toBe("");
+    await user.type(password, "fixture-smtp-password");
+    await user.click(
+      screen.getByRole("button", { name: "Save SMTP password" }),
+    );
+    await screen.findByText(/SMTP password saved securely/);
+    expect(password.value).toBe("");
+    expect(
+      mockCall.mock.calls.find(([c]) => c.op === "configureSmtp")?.[0],
+    ).toMatchObject({
+      profileId: "other-demo",
+      accountId: "100",
+      password: "fixture-smtp-password",
+    });
+    expect(mockCall.mock.calls.some(([c]) => c.op === "testSmtp")).toBe(false);
+    await user.selectOptions(screen.getByLabelText("Zoho SMTP server"), "pro");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Check SMTP connection",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+  it("locks recipient/content edits while preparing the saved send snapshot", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(
+      screen.getByLabelText("To recipients"),
+      "jamie@example.test",
+    );
+    const normal = mockCall.getMockImplementation()!;
+    let release: () => void = () => {};
+    mockCall.mockImplementation(async (c: Command) => {
+      if (c.op === "saveLocalDraft" && c.compose) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return normal(c);
+    });
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(
+      (screen.getByLabelText("To recipients") as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(
+      screen.getByLabelText("Message body").getAttribute("contenteditable"),
+    ).toBe("false");
+    mockCall.mockImplementation(normal);
+    await act(async () => release());
+    await screen.findByRole("button", { name: "Cancel send" });
+    await user.click(screen.getByRole("button", { name: "Cancel send" }));
+    expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+  });
+  it("reports an accepted message despite local draft-cleanup failure, without offering a duplicate send", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(
+      screen.getByLabelText("To recipients"),
+      "jamie@example.test",
+    );
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) => {
+      if (c.op === "saveLocalDraft" && !c.compose)
+        throw new Error("fixture cleanup error");
+      return normal(c);
+    });
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Send now" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "New message" })).toBeNull(),
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Zoho accepted the message",
+    );
+    expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
+      1,
+    );
+  });
+  it("keeps a pasted image draft locally and requires SMTP setup before live delivery", async () => {
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) => {
+      const value = await normal(c);
+      return c.op === "snapshot" ? { ...value, demo: false } : value;
+    });
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(
+      screen.getByLabelText("To recipients"),
+      "jamie@example.test",
+    );
+    const bytes = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII=",
+      ),
+      (c) => c.charCodeAt(0),
+    );
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        files: [new File([bytes], "fixture.png", { type: "image/png" })],
+        getData: () => "",
+      },
+    });
+    fireEvent(screen.getByLabelText("Message body"), event);
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Message body").querySelector("img[src]"),
+      ).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Message body").getAttribute("contenteditable"),
+      ).toBe("true"),
+    );
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "set up Inline images (SMTP)",
+    );
+    expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Cancel send" })).toBeNull();
+    expect(
+      [...backend.drafts.values()].some((d) =>
+        d.body.includes("data:image/png;base64,"),
+      ),
+    ).toBe(true);
+  });
+  it("shows a persisted mailbox rejection, cancels stale loading and leaves the other profile usable", async () => {
+    const user = await inbox();
+    let resolveFolders: (value: unknown) => void = () => {};
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) =>
+      c.op === "folders" && c.profileId === "other-demo"
+        ? new Promise((resolve) => {
+            resolveFolders = resolve;
+          })
+        : normal(c),
+    );
+    await user.selectOptions(
+      screen.getByLabelText("Switch mailbox"),
+      "other-demo:100",
+    );
+    await screen.findByText("Loading mail…");
+    const snapshot = (await normal({ op: "snapshot" })) as Snapshot;
+    snapshot.demo = false;
+    snapshot.profiles = snapshot.profiles.map((p) =>
+      p.id === "other-demo"
+        ? {
+            ...p,
+            connected: false,
+            paused:
+              "Zoho rejected the operation (400). Review the operation and permissions; no retry was made.",
+          }
+        : p,
+    );
+    await act(async () => backend.emit({ type: "connection", snapshot }));
+    await waitFor(() => expect(screen.queryByText("Loading mail…")).toBeNull());
+    expect(screen.getByRole("alert").textContent).toContain(
+      "alex@studio.example.test: Zoho rejected",
+    );
+    expect(
+      (screen.getByRole("button", { name: /Compose/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(screen.getByText("Mailbox disconnected")).toBeTruthy();
+    await user.selectOptions(
+      screen.getByLabelText("Switch mailbox"),
+      "demo:100",
+    );
+    await screen.findByRole("button", {
+      name: "Open A little breathing room for your inbox",
+    });
+    expect(
+      (screen.getByRole("button", { name: /Compose/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => resolveFolders([]));
+    expect(
+      screen.getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    ).toBeTruthy();
+  });
+  it("shows a single-line message list without previews or metadata rows", async () => {
+    await inbox();
+    const row = screen
+      .getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      })
+      .closest(".message-row")!;
+    expect(row.querySelector('input[type="checkbox"]')).toBeTruthy();
+    expect(row.querySelector(".row-top strong")?.textContent).toBeTruthy();
+    expect(row.querySelector(".row-subject")?.textContent).toBe(
+      "A little breathing room for your inbox",
+    );
+    expect(row.querySelector("p, time, .row-labels, .row-star")).toBeNull();
+  });
+  it("Delete moves the selected message to Trash but does not intercept typing in search", async () => {
+    const user = await inbox();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    );
+    await screen.findByTitle("Email content");
+    const search = screen.getByRole("textbox", { name: "Search mail" });
+    await user.click(search);
+    await user.keyboard("{Delete}");
+    expect(
+      mockCall.mock.calls.some(
+        ([c]) => c.op === "action" && c.action === "move",
+      ),
+    ).toBe(false);
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    );
+    await user.keyboard("{Delete}");
+    await waitFor(() =>
+      expect(
+        mockCall.mock.calls.some(
+          ([c]) => c.op === "action" && c.action === "move" && c.target === "6",
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: "Open A little breathing room for your inbox",
+        }),
+      ).toBeNull(),
+    );
+  });
+  it("Delete works from a checked row in unified view using the originating mailbox", async () => {
+    const user = await inbox();
+    await user.selectOptions(
+      screen.getByLabelText("Switch mailbox"),
+      "unified",
+    );
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "Select Studio review — a different business",
+    });
+    await user.click(checkbox);
+    await user.keyboard("{Delete}");
+    await waitFor(() =>
+      expect(
+        mockCall.mock.calls.some(
+          ([c]) =>
+            c.op === "action" &&
+            c.action === "move" &&
+            c.profileId === "other-demo" &&
+            c.accountId === "100" &&
+            c.target === "6",
+        ),
+      ).toBe(true),
+    );
+  });
+  it("loads mailbox-scoped recipient suggestions and offers Send now to the left of Cancel", async () => {
+    const user = await inbox();
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) =>
+      c.op === "recipientHistory" ? ["jamie@example.test"] : normal(c),
+    );
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(screen.getByLabelText("To recipients"), "ja");
+    await user.click(
+      await screen.findByRole("option", { name: "jamie@example.test" }),
+    );
+    await user.type(screen.getByLabelText("Message body"), "Send now test");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    const now = screen.getByRole("button", { name: "Send now" });
+    expect(now.nextElementSibling).toBe(
+      screen.getByRole("button", { name: "Cancel send" }),
+    );
+    expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+    await user.click(now);
+    await waitFor(() =>
+      expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
+        1,
+      ),
+    );
+    expect(
+      mockCall.mock.calls.find(([c]) => c.op === "send")![0].compose.to,
+    ).toBe("jamie@example.test, ");
+  });
   it("Cancel send returns to editing and never submits the cancelled message", async () => {
     const user = await inbox();
     await user.click(screen.getByRole("button", { name: /Compose/ }));
@@ -102,6 +514,23 @@ describe("offline inbox workflows", () => {
     expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
   });
   it("pastes an image into the body and a clipboard file into attachments", async () => {
+    const normal = mockCall.getMockImplementation()!;
+    mockCall.mockImplementation(async (c: Command) => {
+      const value = await normal(c);
+      return c.op === "snapshot"
+        ? {
+            ...value,
+            demo: false,
+            smtp: {
+              "demo:100": {
+                configured: true,
+                server: "standard",
+                paused: null,
+              },
+            },
+          }
+        : value;
+    });
     const user = await inbox();
     await user.click(screen.getByRole("button", { name: /Compose/ }));
     await user.click(
@@ -144,6 +573,21 @@ describe("offline inbox workflows", () => {
       mockCall.mock.calls.filter(([c]) => c.op === "importPaste"),
     ).toHaveLength(2);
     expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+    await user.type(
+      screen.getByLabelText("To recipients"),
+      "jamie@example.test",
+    );
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Send now" }));
+    await waitFor(() =>
+      expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
+        1,
+      ),
+    );
+    const sent = mockCall.mock.calls.find(([c]) => c.op === "send")![0].compose;
+    expect(sent.format).toBe("html");
+    expect(sent.body).toMatch(/<img[^>]+src="data:image\/png;base64,/);
+    expect(sent.attachments[0].name).toBe("report.pdf");
   });
   it("shows the creator and package version in About", async () => {
     const user = await inbox();

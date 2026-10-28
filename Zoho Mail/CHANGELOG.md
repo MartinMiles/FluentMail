@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.5.0 ? 2026-10-28
+
+- Display received embedded raster images through authenticated, message-scoped Zoho downloads. Match MIME CIDs to provider metadata and show images inside the sandbox; remote tracking images remain blocked.
+- Add conversation rows with circular message counts and chronological, expandable original/reply cards spanning Inbox and Sent. Load older history explicitly and reply/forward from the chosen message.
+- Preserve mailbox isolation and row selection as replies arrive. Fetch expanded bodies lazily, deduplicate image downloads, bound image memory and show unsupported-image warnings.
+- Owner reports v1.4 SMTP inline delivery to Gmail succeeded; receiving images and conversation display were separate missing client features.
+
+## 1.4.0 — 2026-10-28
+
+- Add owner-approved Zoho SMTP sending for messages with pasted images, retaining API receiving and ordinary API sends. Generate standard matching inline CID/MIME parts exactly once, without public hosting or duplicate ordinary image files.
+- Add per-mailbox encrypted SMTP/app-password setup and explicit connection verification. Snapshots contain status only; source-mailbox changes clear password inputs. Standard/pro server selection does not change the subscription.
+- Fixed TLS 465 with certificate/SNI checks, no automatic retry or pooling. SMTP failures are isolated from API receiving; uncertain sends remain protected by the persistent submission ledger.
+- Preserve aliases, Bcc privacy and RFC reply threading; record accepted recipients only and report partial delivery or post-acceptance local cleanup failures honestly.
+- Lock edits during draft preparation. Inline-image scheduling/cloud-copy controls explain the supported local-draft/send-now behavior. Remove unsupported ghost image nodes from quoted replies.
+- Retain all v1.3 recipient suggestions, Send now, Del-to-Trash, compact rows and account-state fixes. Live SMTP sign-in requires the actual mailbox/app password; offline MIME validation alone does not establish account eligibility.
+
+## 1.3.0 — 2026-10-28
+
+- Suggest previously emailed recipients after two characters, with mailbox-scoped encrypted history, keyboard/mouse selection and a bounded recent-Sent seed.
+- Add Send now to the left of Cancel in the five-second countdown; submit exactly once.
+- Delete selected messages with Del, including checked rows and unified inbox routing; keep text editing shortcuts intact.
+- Use single-line message rows without preview/metadata lines; show recipients in Sent.
+- Show persisted account pauses and the failed operation, clear stale loading on mailbox switches, and isolate other connected accounts. Reconnection invalidates the previous client's queued work and refreshes recipient history.
+- Correct Sent listing's independent exclusion flag and the unsupported inline-upload account-ID equality assumption.
+- **Inline delivery remains unresolved:** live tests did not produce working MIME inline images. Retain pasted images in local drafts and block live send/cloud-save before upload, with an explicit error. Do not silently convert them to ordinary attachments. See docs/INLINE-IMAGES.md.
+- Strengthen source-control exclusions for protected settings/backups, private recipient history and diagnostic outputs. Record the owner's standing project authorization in AGENTS.md and PROJECT_CONTEXT.md.
+
 ## 1.2.0 — 2026-10-28
 
 - Replace the second send-confirmation step with one Send click and a five-second cancellation countdown. Cancel returns to editing; close/Exit also cancels pending submission and keeps the draft. Uploads start only after the grace period.

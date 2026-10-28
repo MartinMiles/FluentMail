@@ -4,6 +4,7 @@ export class SendDelay {
   private interval: ReturnType<typeof setInterval> | undefined;
   private generation = 0;
   private tick: ((seconds: number | null) => void) | undefined;
+  private send: (() => void) | undefined;
   get pending() {
     return this.timeout !== undefined;
   }
@@ -12,6 +13,7 @@ export class SendDelay {
     const generation = ++this.generation;
     const deadline = Date.now() + 5000;
     this.tick = onTick;
+    this.send = send;
     onTick(5);
     this.interval = setInterval(() => {
       if (generation === this.generation)
@@ -19,10 +21,15 @@ export class SendDelay {
     }, 200);
     this.timeout = setTimeout(() => {
       if (generation !== this.generation) return;
-      this.clear();
-      onTick(null);
-      send();
+      this.sendNow();
     }, 5000);
+  }
+  sendNow() {
+    if (!this.pending) return false;
+    const send = this.send;
+    this.cancel();
+    send?.();
+    return true;
   }
   private clear() {
     if (this.timeout) clearTimeout(this.timeout);
@@ -36,6 +43,7 @@ export class SendDelay {
     this.clear();
     if (wasPending) this.tick?.(null);
     this.tick = undefined;
+    this.send = undefined;
     return wasPending;
   }
 }

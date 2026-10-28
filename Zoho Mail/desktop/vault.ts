@@ -4,8 +4,10 @@ import {
   type Compose,
   type Preferences,
   preferencesSchema,
+  type SmtpServer,
 } from "../src/shared";
 import type { Secret, SecretStore } from "./transport";
+import { rememberRecipients } from "../src/recipientHistory";
 export interface Cipher {
   isEncryptionAvailable(): boolean;
   encryptString(text: string): Buffer;
@@ -17,6 +19,16 @@ type Data = {
   drafts: Record<string, Compose>;
   submitted: Record<string, "pending" | "sent">;
   preferences?: Preferences;
+  recipientHistory?: Record<string, string[]>;
+  smtp?: Record<
+    string,
+    {
+      password: string;
+      server: SmtpServer;
+      paused: string | null;
+      verifiedAt?: number;
+    }
+  >;
 };
 export class Vault implements SecretStore {
   data: Data = { version: 1, profiles: [], drafts: {}, submitted: {} };
@@ -41,6 +53,16 @@ export class Vault implements SecretStore {
   preferences() {
     return preferencesSchema.parse(this.data.preferences || {});
   }
+  recipients(key: string) {
+    return this.data.recipientHistory?.[key] || [];
+  }
+  remember(key: string, fields: string[]) {
+    this.data.recipientHistory ||= {};
+    this.data.recipientHistory[key] = rememberRecipients(
+      this.recipients(key),
+      fields,
+    );
+  }
   persist() {
     if (!this.cipher.isEncryptionAvailable())
       throw new Error(
@@ -62,6 +84,10 @@ export class Vault implements SecretStore {
     this.data.profiles = this.data.profiles.filter((p) => p.id !== id);
     for (const key of Object.keys(this.data.drafts))
       if (key.startsWith(id + ":")) delete this.data.drafts[key];
+    for (const key of Object.keys(this.data.recipientHistory || {}))
+      if (key.startsWith(id + ":")) delete this.data.recipientHistory![key];
+    for (const key of Object.keys(this.data.smtp || {}))
+      if (key.startsWith(id + ":")) delete this.data.smtp![key];
     this.persist();
   }
 }

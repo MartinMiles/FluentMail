@@ -8,7 +8,7 @@ function setup() {
   );
   const transport = {
     request,
-    secret: { id: "p", email: "alex@example.test" },
+    secret: { id: "p", email: "alex@example.test", region: "US" },
     disconnect: vi.fn(),
     stop: (m: string) => {
       throw new Error(m);
@@ -28,6 +28,111 @@ function setup() {
 }
 const ref = { accountId: "100", profileId: "p" };
 describe("documented mail operations", () => {
+  it("supports a bounded unthreaded metadata page for counts when provider counts are zero", async () => {
+    const { mail, request } = setup();
+    await mail.execute({
+      op: "list",
+      ...ref,
+      folderId: "20",
+      limit: 200,
+      start: 1,
+      filter: "all",
+    });
+    const url = new URL("https://fixture.test" + request.mock.calls[0][0]);
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      limit: "200",
+      includesent: "true",
+      includearchive: "false",
+      folderId: "20",
+    });
+    expect(url.searchParams.has("threadedMails")).toBe(false);
+  });
+  it("reads full thread membership across Sent and Inbox, without folder restrictions", async () => {
+    const { mail, request } = setup();
+    await mail.execute({
+      op: "list",
+      ...ref,
+      threadId: "500",
+      start: 41,
+      filter: "all",
+    });
+    const q = new URL("https://fixture.test" + request.mock.calls[0][0]);
+    expect(Object.fromEntries(q.searchParams)).toMatchObject({
+      threadId: "500",
+      start: "41",
+      includesent: "true",
+      includearchive: "true",
+    });
+    expect(q.searchParams.has("folderId")).toBe(false);
+    expect(q.searchParams.has("threadedMails")).toBe(false);
+  });
+  it("downloads CID images even when the message has no ordinary attachments", async () => {
+    const { mail, request } = setup();
+    const bytes = Buffer.from("89504e470d0a1a0a", "hex");
+    request
+      .mockResolvedValueOnce({
+        content: '<p>Reply<img src="cid:image@test"></p>',
+      })
+      .mockResolvedValueOnce({
+        inline: [
+          { cid: "image@test", attachmentName: "image.png", attachmentSize: 8 },
+        ],
+        attachments: [],
+      })
+      .mockResolvedValueOnce(bytes);
+    const result: any = await mail.execute({
+      op: "detail",
+      ...ref,
+      folderId: "20",
+      messageId: "1001",
+      attachments: false,
+    });
+    expect(result.html).toContain("data:image/png;base64,");
+    expect(result.attachments).toEqual([]);
+    expect(request.mock.calls[1][0]).toContain(
+      "/attachmentinfo?includeInline=true",
+    );
+    expect(request.mock.calls[2]).toEqual([
+      "/api/accounts/100/folders/20/messages/1001/inline?contentId=image%40test&fileName=image.png",
+      "GET",
+      undefined,
+      true,
+    ]);
+  });
+  it("accepts Zoho's documented inline URL with a different internal account ID", async () => {
+    const { mail, request } = setup();
+    const url =
+      "/zm/ImageSignature?fileName=image.png&accountId=29254000000005001&storeName=53862395&frm=c";
+    request.mockResolvedValueOnce({
+      storeName: "53862395",
+      attachmentPath: "/compose/image.png",
+      attachmentName: "image.png",
+      url,
+    });
+    expect(
+      await mail.upload("100", "image.png", new Uint8Array([1]), true),
+    ).toMatchObject({ url: "https://mail.zoho.com" + url });
+  });
+  it.each([
+    "https://evil.test/zm/ImageSignature?accountId=100",
+    "https://mail.zoho.eu/zm/ImageSignature?accountId=100",
+    "https://mail.zoho.com/other?accountId=100",
+    "http://mail.zoho.com/zm/ImageSignature?accountId=100",
+    "https://user:pass@mail.zoho.com/zm/ImageSignature?accountId=100",
+    "javascript:alert(1)",
+    "",
+  ])("rejects unsafe inline upload URL %s", async (url) => {
+    const { mail, request } = setup();
+    request.mockResolvedValueOnce({
+      storeName: "store",
+      attachmentPath: "/compose/image.png",
+      attachmentName: "image.png",
+      url,
+    });
+    await expect(
+      mail.upload("100", "image.png", new Uint8Array([1]), true),
+    ).rejects.toThrow(/inline image URL/);
+  });
   it("sends sanitized rich HTML using the documented html format", async () => {
     const { mail, request } = setup();
     const c = {
@@ -82,6 +187,7 @@ describe("documented mail operations", () => {
       limit: "40",
       status: "unread",
       includearchive: "false",
+      includesent: "true",
       folderId: "20",
     });
   });

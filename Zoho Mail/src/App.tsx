@@ -63,6 +63,8 @@ import { mergeInboxUpdate } from "./inboxUpdates";
 import { Settings } from "./Settings";
 import { Composer } from "./Composer";
 import { Modal } from "./Modal";
+import { ConversationReader } from "./ConversationReader";
+import { conversationKey, groupConversations } from "./conversations";
 
 const initialSnapshot: Snapshot = { demo: false, profiles: [], accounts: [] };
 const accountKey = (a: Account) => a.profileId + ":" + a.id;
@@ -155,19 +157,38 @@ export default function App() {
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [rawMessages, setMessages] = useState<Message[]>([]);
+  const [threadCounts, setThreadCounts] = useState<
+    Record<string, { count: number; exact: boolean }>
+  >({});
+  const [countRefresh, setCountRefresh] = useState(0);
+  const messages = useMemo(
+    () =>
+      groupConversations(rawMessages).map((m) => ({
+        ...m,
+        threadCount: Math.max(
+          m.threadCount || 1,
+          threadCounts[key + ":" + m.id]?.count || 1,
+        ),
+        threadCountEstimated: threadCounts[key + ":" + m.id]?.exact === false,
+      })),
+    [rawMessages, threadCounts, key],
+  );
   const [start, setStart] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState("");
   const [checked, setChecked] = useState<string[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [activeMessage, setActiveMessage] = useState<Message | null>(null);
+  const [activeFor, setActiveFor] = useState("");
   const [bodyLoading, setBodyLoading] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [smtpAccountKey, setSmtpAccountKey] = useState<string | undefined>();
   const [about, setAbout] = useState(false);
   const [lastChecked, setLastChecked] = useState(0);
   const eventHandler = useRef<(event: AppEvent) => Promise<void>>(
@@ -212,7 +233,11 @@ export default function App() {
     ? snapshot.profiles.find((p) => p.id === account.profileId)
     : undefined;
   const connected = !!profile?.connected;
-  const message = messages.find((m) => m.id === selected);
+  const selectedRow = messages.find((m) => m.id === selected);
+  const message =
+    selectedRow && activeMessage && activeFor === key + ":" + selected
+      ? activeMessage
+      : selectedRow;
   const folder = folders.find((f) => f.id === view);
   const label = labels.find((l) => "label:" + l.id === view);
   const sourceAccount = (m: Message) =>
@@ -233,10 +258,7 @@ export default function App() {
         : view === "starred"
           ? "Flagged"
           : label?.name || folder?.name || "Inbox";
-  const safe = useMemo(
-    () => safeMail(detail?.html || "", dark),
-    [detail?.html, dark],
-  );
+
   const fail = useCallback((e: unknown) => {
     setError(e instanceof Error ? e.message : "Something went wrong.");
     void call<Snapshot>({ op: "snapshot" })
@@ -311,6 +333,7 @@ export default function App() {
             folder?.path.toLowerCase() === "/inbox"))
       ) {
         setMessages((current) => mergeInboxUpdate(current, u, unified));
+        if (u.fresh.length) setCountRefresh((r) => r + 1);
         if (!unified) setHasMore(u.hasMore);
       }
     }
@@ -362,6 +385,8 @@ export default function App() {
     setQuery("");
     setQueryInput("");
     setStart(1);
+    setLoading(false);
+    setBodyLoading(false);
     if (!ref || !connected) return;
     setLoading(true);
     void (async () => {
@@ -484,7 +509,7 @@ export default function App() {
                 ? r.messages
                 : [pending.message, ...r.messages],
             );
-            setSelected(pending.message.id);
+            setSelected(conversationKey(pending.message));
             pendingOpen.current = null;
           } else setMessages(r.messages);
           setHasMore(r.hasMore);
@@ -504,30 +529,92 @@ export default function App() {
     };
   }, [key, loadedFor, view, filter, query, start, refresh, connected]);
   useEffect(() => {
-    const generation = ++detailGeneration.current;
-    setDetail(null);
-    if (!ref || !message || !connected) return;
-    setBodyLoading(true);
-    void call<Detail>({
-      op: "detail",
-      ...messageRef!,
-      folderId: message.folderId,
-      messageId: messageId(message),
-      attachments: message.hasAttachment,
-    })
-      .then((d) => {
-        if (generation === detailGeneration.current) setDetail(d);
-      })
-      .catch((e) => {
-        if (generation === detailGeneration.current) fail(e);
-      })
-      .finally(() => {
-        if (generation === detailGeneration.current) setBodyLoading(false);
-      });
+    if (!connected || loadedFor !== key) return;
+    let active = true;
+    // Zoho may report threadCount=0 even for real conversations. Bounded
+    // Inbox/Sent/current-folder summary pages avoid one request per row.
+    void (async () => {
+      try {
+        for (const source of unified
+          ? availableAccounts
+          : account
+            ? [account]
+            : []) {
+          if (!active) return;
+          const sourceFolders = unified
+            ? mailboxFolders[accountKey(source)] || []
+            : folders;
+          const selectedFolders = sourceFolders.filter(
+            (f) =>
+              f.type === "Inbox" ||
+              f.type === "Sent" ||
+              (!unified && f.id === view),
+          );
+          const page: ListResult = { messages: [], hasMore: false };
+          for (const f of selectedFolders) {
+            if (!active) return;
+            const part = await call<ListResult>({
+              op: "list",
+              profileId: source.profileId,
+              accountId: source.id,
+              folderId: f.id,
+              start: 1,
+              filter: "all",
+              limit: 200,
+            });
+            if (!active) return;
+            page.messages.push(...part.messages);
+            page.hasMore ||= part.hasMore;
+          }
+          const summaries = unified
+            ? page.messages.map((m) => ({
+                ...m,
+                id: accountKey(source) + ":" + m.id,
+                remoteId: m.id,
+                sourceKey: accountKey(source),
+              }))
+            : page.messages;
+          const counts = Object.fromEntries(
+            groupConversations(summaries).map((m) => [
+              key + ":" + m.id,
+              { count: m.threadCount || 1, exact: false },
+            ]),
+          );
+          setThreadCounts((current) => {
+            const next = { ...current };
+            for (const [id, value] of Object.entries(counts)) {
+              // A late bounded scan cannot downgrade an already complete thread read.
+              if (!current[id]?.exact || value.count > current[id].count)
+                next[id] = value;
+            }
+            return next;
+          });
+        }
+      } catch (error) {
+        if (active) fail(error);
+      }
+    })();
     return () => {
-      detailGeneration.current++;
+      active = false;
     };
-  }, [key, selected, connected]);
+  }, [
+    key,
+    connected,
+    connectionSignature,
+    loadedFor,
+    view,
+    refresh,
+    countRefresh,
+  ]);
+  const activateMessage = useCallback(
+    (m: Message, d: Detail | null) => {
+      setActiveFor(key + ":" + selected);
+      setActiveMessage(m);
+      setDetail(d);
+      setBodyLoading(!d);
+    },
+    [key, selected],
+  );
   const chooseView = (v: string) => {
     if (busy) return;
     setView(v);
@@ -561,7 +648,11 @@ export default function App() {
     if (!chosen.length) return;
     await run(async () => {
       const selectedMessages = chosen
-        .map((id) => messages.find((m) => m.id === id))
+        .map((id) =>
+          id === selected && message
+            ? message
+            : messages.find((m) => m.id === id),
+        )
         .filter((m): m is Message => !!m);
       if (!selectedMessages.length) return;
       const source = sourceAccount(selectedMessages[0]);
@@ -610,7 +701,13 @@ export default function App() {
     if (availableAccounts.length > 1) setSenderChoice(true);
     else composeFrom(account);
   };
-  const reply = (mode: "reply" | "all" | "forward" | "edit") => {
+  const reply = (
+    mode: "reply" | "all" | "forward" | "edit",
+    targetMessage = message,
+    targetDetail = detail,
+  ) => {
+    const message = targetMessage;
+    const detail = targetDetail;
     if (!messageAccount || !message || !detail) return;
     const c = blankCompose(messageAccount.email);
     const own = messageAccount.aliases.map((a) => a.toLowerCase());
@@ -702,7 +799,9 @@ export default function App() {
         return;
       const typing =
         e.target instanceof HTMLElement &&
-        !!e.target.closest("input,textarea,select,[contenteditable]");
+        !!e.target.closest(
+          "input:not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]",
+        );
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -714,6 +813,25 @@ export default function App() {
         return;
       }
       if (typing) return;
+      if (
+        e.key === "Delete" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        if (
+          !busy &&
+          !loading &&
+          connected &&
+          (checked.length || selected) &&
+          !e.repeat
+        ) {
+          e.preventDefault();
+          void action("move", "__trash__");
+        }
+        return;
+      }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const index = messages.findIndex((m) => m.id === selected);
@@ -974,7 +1092,9 @@ export default function App() {
                   ? "Sample mail · nothing is sent"
                   : connected
                     ? "Connected to Zoho"
-                    : "Disconnected"}
+                    : profile?.paused
+                      ? "Connection paused"
+                      : "Disconnected"}
               </small>
             </div>
           </div>
@@ -1039,7 +1159,9 @@ export default function App() {
                       : prefs.automaticChecks
                         ? "Automatic checks on"
                         : "Checks paused"
-                    : "Disconnected"}
+                    : profile?.paused
+                      ? "Connection paused"
+                      : "Disconnected"}
                 </span>
                 <Tool
                   title="Refresh mail"
@@ -1056,19 +1178,25 @@ export default function App() {
                 </Tool>
               </div>
             </div>
-            {error && (
+            {(error || profile?.paused) && (
               <div className="error-box inline-error" role="alert">
                 <AlertCircle size={18} />
-                <span>{error}</span>
+                <span>
+                  {profile?.paused
+                    ? `${account.email}: ${profile.paused}`
+                    : error}
+                </span>
                 <button
                   className="text-button"
                   onClick={() => setSettings(true)}
                 >
                   Accounts
                 </button>
-                <Tool title="Dismiss error" onClick={() => setError("")}>
-                  <X size={15} />
-                </Tool>
+                {!profile?.paused && (
+                  <Tool title="Dismiss error" onClick={() => setError("")}>
+                    <X size={15} />
+                  </Tool>
+                )}
               </div>
             )}
             <div className="mail-toolbar">
@@ -1251,11 +1379,19 @@ export default function App() {
                   ) : messages.length === 0 ? (
                     <div className="empty-list">
                       <Inbox size={32} />
-                      <h3>{query ? "No matches" : "All clear"}</h3>
+                      <h3>
+                        {!connected
+                          ? "Mailbox disconnected"
+                          : query
+                            ? "No matches"
+                            : "All clear"}
+                      </h3>
                       <p>
-                        {query
-                          ? "Try a different Zoho search expression."
-                          : "There are no messages in this view."}
+                        {!connected
+                          ? "Open Accounts to review this connection. No retry is running."
+                          : query
+                            ? "Try a different Zoho search expression."
+                            : "There are no messages in this view."}
                       </p>
                     </div>
                   ) : (
@@ -1290,58 +1426,49 @@ export default function App() {
                               )
                             }
                           />
-                          <button
-                            className={
-                              "row-star " +
-                              (m.flag !== "flag_not_set" ? "flagged" : "")
-                            }
-                            title="Toggle flag"
-                            aria-label={"Flag " + cleanText(m.subject)}
-                            disabled={busy || !connected}
-                            onClick={() =>
-                              void action(
-                                m.flag === "flag_not_set" ? "flag" : "unflag",
-                                undefined,
-                                [m.id],
-                              )
-                            }
-                          >
-                            <Star size={15} />
-                          </button>
                         </div>
                         <button
                           className="message-select"
                           aria-label={"Open " + cleanText(m.subject)}
                           aria-pressed={selected === m.id}
+                          title={
+                            sourceAccount(m).email +
+                            " · " +
+                            cleanText(m.sender) +
+                            " · " +
+                            cleanText(m.subject)
+                          }
                           onClick={() => setSelected(m.id)}
                           disabled={busy}
                         >
                           <div className="row-top">
-                            <strong>{cleanText(m.sender)}</strong>
-                            <time>{shortTime(m.time)}</time>
+                            <strong>
+                              {cleanText(
+                                folder?.type === "Sent" ? m.to : m.sender,
+                              )}
+                            </strong>
+                            {(m.threadCount || 1) > 1 && (
+                              <span
+                                className="thread-count"
+                                aria-label={`${m.threadCount} messages in conversation`}
+                                title={
+                                  m.threadCountEstimated
+                                    ? `At least ${m.threadCount} messages. Open the conversation for its full count.`
+                                    : `${m.threadCount} messages in conversation`
+                                }
+                              >
+                                {m.threadCount}
+                                {m.threadCountEstimated ? "+" : ""}
+                              </span>
+                            )}
                           </div>
                           <div className="row-subject">
                             {m.unread && <span className="unread-dot" />}
-                            {cleanText(m.subject)}
+                            <span className="subject-text">
+                              {cleanText(m.subject)}
+                            </span>
                             {m.hasAttachment && <Paperclip size={13} />}
                           </div>
-                          <p>{cleanText(m.summary)}</p>
-                          {unified ? (
-                            <div className="row-labels">
-                              <span>{sourceAccount(m).email}</span>
-                            </div>
-                          ) : (
-                            m.labels.length > 0 && (
-                              <div className="row-labels">
-                                {m.labels.map((id) => {
-                                  const l = labels.find((l) => l.id === id);
-                                  return l ? (
-                                    <span key={id}>{l.name}</span>
-                                  ) : null;
-                                })}
-                              </div>
-                            )
-                          )}
                         </button>
                       </div>
                     ))
@@ -1418,138 +1545,32 @@ export default function App() {
                         </Tool>
                       </div>
                     </div>
-                    <div className="sender-card">
-                      <span className="sender-avatar">
-                        {initials(cleanText(message.sender))}
-                      </span>
-                      <div>
-                        <strong>{cleanText(message.sender)}</strong>
-                        <span>{message.from}</span>
-                        <small>
-                          To: {cleanText(message.to)}
-                          {message.cc && " · Cc: " + cleanText(message.cc)}
-                        </small>
-                      </div>
-                      <time>{time(message.time)}</time>
-                    </div>
                     <div className="reader-scroll">
-                      {bodyLoading ? (
-                        <div className="body-loading">
-                          <RefreshCw className="spinning" size={22} /> Opening
-                          message…
-                        </div>
-                      ) : detail ? (
-                        <>
-                          <div className="message-document">
-                            <iframe
-                              title="Email content"
-                              sandbox=""
-                              referrerPolicy="no-referrer"
-                              srcDoc={safe.document}
-                            />
-                          </div>
-                          {detail.attachments.length > 0 && (
-                            <div className="attachments">
-                              <h4>
-                                {detail.attachments.length} ATTACHMENT
-                                {detail.attachments.length > 1 ? "S" : ""}
-                              </h4>
-                              {detail.attachments.map((a) => (
-                                <button
-                                  key={a.id}
-                                  className="attachment-card"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void run(async () => {
-                                      const result = await call<string | null>({
-                                        op: "saveAttachment",
-                                        ...messageRef!,
-                                        folderId: message.folderId,
-                                        messageId: messageId(message),
-                                        attachmentId: a.id,
-                                        name: a.name,
-                                      });
-                                      if (result) setToast(result);
-                                    })
-                                  }
-                                >
-                                  <span>
-                                    <FileText size={23} />
-                                  </span>
-                                  <div>
-                                    <strong>{a.name}</strong>
-                                    <small>
-                                      {(a.size / 1024).toFixed(1)} KB
-                                    </small>
-                                  </div>
-                                  <Download size={17} />
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                          {safe.links.length > 0 && (
-                            <details className="message-links">
-                              <summary>
-                                Links in this message ({safe.links.length})
-                              </summary>
-                              {safe.links.map((l) => (
-                                <button
-                                  className="text-button"
-                                  key={l.url}
-                                  onClick={() =>
-                                    void call({
-                                      op: "openLink",
-                                      url: l.url,
-                                    }).catch(fail)
-                                  }
-                                >
-                                  {l.label}
-                                  <small>{l.url}</small>
-                                  <ArrowUpRight size={14} />
-                                </button>
-                              ))}
-                            </details>
-                          )}
-                          <div className="reply-buttons">
-                            {folder?.type === "Drafts" ? (
-                              <button
-                                className="secondary"
-                                onClick={() => reply("edit")}
-                              >
-                                <PenLine size={17} /> Edit as new message
-                              </button>
-                            ) : (
-                              <>
-                                <button
-                                  className="secondary"
-                                  onClick={() => reply("reply")}
-                                >
-                                  <Reply size={17} /> Reply
-                                </button>
-                                <button
-                                  className="secondary"
-                                  onClick={() => reply("all")}
-                                >
-                                  <ReplyAll size={17} /> Reply all
-                                </button>
-                                <button
-                                  className="secondary"
-                                  onClick={() => reply("forward")}
-                                >
-                                  <ArrowRight size={17} /> Forward
-                                </button>
-                              </>
-                            )}
-                          </div>
-                          <p className="privacy-note">
-                            <ShieldCheck size={13} /> Remote images and active
-                            content are blocked.
-                          </p>
-                        </>
-                      ) : (
-                        <div className="empty-list">
-                          <p>Message content could not be loaded.</p>
-                        </div>
+                      {selectedRow && messageAccount && (
+                        <ConversationReader
+                          key={key + ":" + selected}
+                          account={messageAccount}
+                          row={selectedRow}
+                          dark={dark}
+                          busy={busy}
+                          revision={refresh}
+                          drafts={folder?.type === "Drafts"}
+                          onActive={activateMessage}
+                          onCount={(count, exact) =>
+                            setThreadCounts((current) =>
+                              current[key + ":" + selected]?.count === count &&
+                              current[key + ":" + selected]?.exact === exact
+                                ? current
+                                : {
+                                    ...current,
+                                    [key + ":" + selected]: { count, exact },
+                                  },
+                            )
+                          }
+                          onReply={(mode, m, d) => reply(mode, m, d)}
+                          onFailure={fail}
+                          onToast={setToast}
+                        />
                       )}
                     </div>
                   </>
@@ -1595,7 +1616,11 @@ export default function App() {
         <Settings
           snapshot={snapshot}
           onUpdate={updateSnapshot}
-          onClose={() => setSettings(false)}
+          onClose={() => {
+            setSettings(false);
+            setSmtpAccountKey(undefined);
+          }}
+          smtpAccountKey={smtpAccountKey}
           dark={dark}
           onTheme={() => setDark((d) => !d)}
           onConnected={(s, email) => {
@@ -1679,9 +1704,15 @@ export default function App() {
           account={compose.account}
           initial={compose.value}
           demo={snapshot.demo}
+          smtpStatus={snapshot.smtp?.[accountKey(compose.account)]}
+          onConfigureSmtp={(sender) => {
+            setSmtpAccountKey(accountKey(sender));
+            setSettings(true);
+          }}
           onClose={() => setCompose(null)}
-          onSent={() => {
+          onSent={(warning) => {
             setCompose(null);
+            if (warning) setError(warning);
             setToast(
               snapshot.demo
                 ? "Demo message sent. No email left this device."
@@ -1709,6 +1740,7 @@ export default function App() {
               ["Ctrl + K", "Search mail"],
               ["↑ / ↓", "Select a message"],
               ["R", "Reply to selected message"],
+              ["Del", "Move selected messages to Trash"],
               ["F5", "Refresh current view"],
               ["Esc", "Clear selection or close dialog"],
             ].map(([key, value]) => (

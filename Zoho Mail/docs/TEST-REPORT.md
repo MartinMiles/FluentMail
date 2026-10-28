@@ -1,70 +1,33 @@
-# Fluent Mail 1.2.0 validation — 2026-10-28
+# Fluent Mail 1.5.0 validation ? 2026-10-28
 
-## Results
+## Automated results
 
-- **101 automated tests passed in 10 files.**
-- TypeScript and production build passed.
-- Full dependency audit: **0 vulnerabilities** reported.
-- Unpacked and final portable Windows executables passed isolated `--demo --smoke-test` launches.
-- No owner clipboard content, credential vault, live OAuth account, or private mailbox was used in these tests.
+174 tests passed in 16 files. TypeScript and production build passed. Dependency audit: zero reported vulnerabilities. Automated tests and native demo use synthetic mailboxes, never real saved credentials.
 
-Executable:
+New coverage: metadata-confirmed CID image downloads for inline-only messages, regional reference validation, no arbitrary remote requests, raster validation/size and count limits, visible unsupported-image feedback, first-failure stop; account-scoped conversation grouping/counts, stable selection, cross-folder chronological cards, lazy body loading/cache, older-page loading, exact-member reply routing and stale response discard. Existing attachment sending, countdown/Send now, recipient history, Delete, account settings and SMTP tests also pass.
 
-```text
-C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.2.0-Windows-x64.exe
-```
+## Package
 
-Size: 113,540,442 bytes (about 108.3 MiB), unsigned Windows x64 portable package.
+C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.5.0-Windows-x64.exe
 
-SHA-256:
+Final size: 113,731,259 bytes. SHA-256: F2A6E39460D392931E62D8477E3FDA4658E30CD18A2C4A235EB8896C5F73BE64.
 
-```text
-A0DFCDE809F82A54F3FA94F8DAA7E8005BA3AA446210A6F2353EE0D9CA9C6BC7
-```
+Both unpacked and final portable Windows --demo --smoke-test runs passed for 1.5.0: custom protocol loading, renderer Node isolation, IPC/events bridge, Windows protected-storage round trip, close-to-tray residency and draft-flush Exit. These runs use separate demo storage. The production app was left running without a forced restart.
 
-Final portable smoke returned:
+A synthetic browser visual check confirmed chronological original/reply cards, circular count 2 and a successfully decoded embedded raster image inside the sandbox.
 
-```json
-{
-  "ok": true,
-  "demo": true,
-  "version": "1.2.0",
-  "loaded": true,
-  "protectedRoundtrip": true,
-  "hiddenToTray": true,
-  "notificationSupported": true,
-  "nodeExposed": false,
-  "bridgeReady": true,
-  "eventsReady": true,
-  "rendered": true,
-  "quitFlushed": true
-}
-```
+## Live evidence and limits
 
-## Send flow
+The owner personally reports successful v1.4 SMTP inline-image delivery to Gmail. Browser inspection of the owner-selected reply conversation confirmed loaded embedded images and both original/reply in Zoho webmail. This establishes that the image reached Zoho; it does not independently prove Fluent Mail rendering.
 
-Pure timer tests establish no submission before 5000ms, exactly one submission after expiry, cancellation at 4999ms, and invalidation of an older timer. Full React workflows use the real five-second delay, verify no second confirmation step, and test successful sends and send failures through the mock backend. UI Cancel returns to an editable message with its contents preserved and no send call. Existing pending-send, failed-authentication, source-mailbox and draft-flush tests remain green.
+Bounded read-only checks authenticated successfully, found the owner-selected two-message conversation across Inbox and Sent, and downloaded a valid PNG. Production-adapter validation returned one embedded PNG, zero ordinary attachments and no image warning, with unchanged vault hashes. Initial local profile lookup stopped before networking because of case-sensitive email matching in the one-off helper. Intermediate checks found and corrected an empty unscoped count query and a mismatched display-path assumption; these were not authentication failures. No sending, message mutations, polling or persistent settings writes occurred. The assistant has not yet visually inspected this real image inside the rebuilt app; renderer isolation/display is tested with synthetic images.
 
-The composer also cancels pending timers on close/unmount/Exit, and guards against late local-save completion arming a timer after closure. During countdown only local draft saving occurs; file uploads and Zoho submission start afterward.
+Zoho returned threadCount=0 for a real conversation. Count badges derive from bounded Inbox/Sent/current-folder summaries, with + for a lower bound until complete conversation history is read. They never infer identity from a subject. Ordinary lists omit the threadedMails filter so standalone mail remains visible.
 
-## Clipboard and inline media
+## Source/privacy
 
-- Synthetic Unicode CF_HDROP file-list decoding, malformed data rejection, local-path restrictions and thumbnail/file precedence.
-- Clipboard text is not read when enumerating media. Tests inject mock ClipboardItem/Blob values; they never query the owner's clipboard.
-- UI paste inserts a fixture PNG image into the rich body, waits for paste completion, then attaches a fixture PDF file. Neither operation sends email.
-- Opaque attachment-handle import prevents renderer-selected filesystem paths.
-- PNG/JPEG/GIF/WebP signatures, remote-image rejection, size limits and deduplication.
-- Exact API contract: `isInline=true`, returned URL restricted to the current region/account, corresponding HTML source replacement, and preservation of upload descriptors. No guessed CID.
-- Outbound sanitization removes scripts, event handlers and unrelated remote images while keeping only the registered inline source.
+Real settings, passwords, OAuth credentials, messages, images, recipient history and diagnostic outputs stay excluded. The encrypted vault is outside the source tree. Publish reviewed source and documentation only. Previous v1.3 report is archived as TEST-REPORT-1.3.md.
 
-During test adaptation, user-event with React fake timers stalled at click completion; the integration tests now use the real grace period while pure timer tests retain exact virtual-clock assertions. Tiptap inserts source-less separator img elements in its editing DOM; the paste assertion correctly targets `img[src]`. These separators are not serialized email images.
+## Publication status
 
-## Limits
-
-External recipient rendering of Zoho's inline-upload URL has **not** been live-verified. The implementation follows the documented inline flag and returned URL contract; it does not claim a successful production send or particular external-client rendering result. Owner-reported v1.0 attachment delivery does not establish inline-image delivery.
-
-Regular clipboard files are session attachment handles and need reattachment after restarting. Inline images persist locally in encrypted HTML drafts. Older executables should not edit these new image drafts, because their editors strip image content. The reader still blocks remote images.
-
-Native clipboard formats and media were validated with fixtures, not live clipboard inspection. Windows notification support is detected, but OS toast visibility remains subject to Windows settings. The existing local renderer chunk-size advisory and synchronous safeStorage deprecation remain documented in PROJECT_CONTEXT.md.
-
-Historical reports: [v1.1](TEST-REPORT-1.1.md), [v1.0](TEST-REPORT-1.0.md). Any future assistant-led live check still requires a named account/client, bounded scope and owner availability under the standing safeguards.
+The full reviewed source is committed locally. GitHub remains the earlier partial 68-file snapshot: the Chrome extension blocks programmatic uploads and the native fallback was stopped because Computer Use could not verify Chrome?s current URL confidently enough. All browser/native UI interaction stopped. Existing CLI identities have read-only repository access; the owner has no registered GitHub SSH keys. No access credentials or browser security settings were changed. The remote was fetched and its initial history preserved locally; no completed push is claimed.

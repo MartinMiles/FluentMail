@@ -12,6 +12,7 @@ import {
   type Result,
   type PasteResult,
   validateRecipients,
+  INLINE_DELIVERY_UNAVAILABLE,
 } from "../src/shared";
 import {
   Pacer,
@@ -24,6 +25,13 @@ import { ZohoMail } from "./zoho";
 import { Vault } from "./vault";
 import { imageDataUrl, inlineImages, MAX_MEDIA } from "./inlineImages";
 import { type ClipboardMedia } from "./clipboard";
+import {
+  SmtpMailer,
+  SmtpFailure,
+  smtpMessage,
+  type SmtpSender,
+  type MailBytes,
+} from "./smtp";
 export interface Dialogs {
   pick(): Promise<string[]>;
   save(name: string): Promise<string | null>;
@@ -45,11 +53,13 @@ export class MailService {
   >();
   private busy = new Set<string>();
   private folderCache = new Map<string, Folder[]>();
+  private historyLoads = new Map<string, Promise<string[]>>();
   constructor(
     private vault: Vault,
     private dialogs: Dialogs,
     private pacer = new Pacer(),
     private fetcher: Fetcher = fetch,
+    private smtp: SmtpSender = new SmtpMailer(),
   ) {}
   snapshot() {
     return {
@@ -63,6 +73,17 @@ export class MailService {
       })),
       accounts: [...this.clients.values()].flatMap((c) => c.accounts),
       preferences: this.vault.preferences(),
+      smtp: Object.fromEntries(
+        Object.entries(this.vault.data.smtp || {}).map(([key, config]) => [
+          key,
+          {
+            configured: !!config.password,
+            server: config.server,
+            paused: config.paused,
+            verifiedAt: config.verifiedAt,
+          },
+        ]),
+      ),
     };
   }
   isBusy() {
@@ -190,12 +211,15 @@ export class MailService {
         } else
           secret = this.vault.data.profiles.find((p) => p.id === c.profileId);
         if (!secret) throw new Error("Account not found.");
+        this.clients.get(secret.id)?.transport.disconnect();
         const client = new ZohoMail(
           new ZohoTransport(secret, this.vault, this.pacer, this.fetcher),
         );
         this.clients.set(secret.id, client);
         for (const key of this.folderCache.keys())
           if (key.startsWith(secret.id + ":")) this.folderCache.delete(key);
+        for (const key of this.historyLoads.keys())
+          if (key.startsWith(secret.id + ":")) this.historyLoads.delete(key);
         await client.transport.authorize(
           c.op === "connect" ? c.code : undefined,
         );
@@ -206,10 +230,20 @@ export class MailService {
       }
     }
     if (c.op === "disconnect" || c.op === "forget") {
+      if (
+        [...this.busy].some((key) =>
+          key.startsWith("smtp:" + c.profileId + ":"),
+        )
+      )
+        throw new Error(
+          "Wait for the current SMTP operation before disconnecting this account.",
+        );
       this.clients.get(c.profileId)?.transport.disconnect();
       this.clients.delete(c.profileId);
       for (const key of this.folderCache.keys())
         if (key.startsWith(c.profileId + ":")) this.folderCache.delete(key);
+      for (const key of this.historyLoads.keys())
+        if (key.startsWith(c.profileId + ":")) this.historyLoads.delete(key);
       if (c.op === "forget") this.vault.forget(c.profileId);
       for (const [key, f] of this.files)
         if (f.profileId === c.profileId) this.files.delete(key);
@@ -241,6 +275,126 @@ export class MailService {
     }
     if (!client) throw new Error("Connect this account first.");
     client.account(c.accountId);
+    const smtpKey = "smtp:" + draftKey;
+    if (
+      c.op === "configureSmtp" ||
+      c.op === "removeSmtp" ||
+      c.op === "testSmtp"
+    ) {
+      if (this.busy.has(smtpKey))
+        throw new Error(
+          "An SMTP operation is already running for this mailbox.",
+        );
+      if (c.op === "configureSmtp") {
+        const previous = this.vault.data.smtp;
+        this.vault.data.smtp = {
+          ...previous,
+          [draftKey]: {
+            password: c.password,
+            server: c.server,
+            paused: null,
+          },
+        };
+        try {
+          this.vault.persist();
+        } catch (e) {
+          this.vault.data.smtp = previous;
+          throw e;
+        }
+        return this.snapshot();
+      }
+      if (c.op === "removeSmtp") {
+        const previous = this.vault.data.smtp;
+        this.vault.data.smtp = { ...previous };
+        delete this.vault.data.smtp[draftKey];
+        try {
+          this.vault.persist();
+        } catch (e) {
+          this.vault.data.smtp = previous;
+          throw e;
+        }
+        return this.snapshot();
+      }
+      const config = this.vault.data.smtp?.[draftKey];
+      if (!config?.password) throw new Error(INLINE_DELIVERY_UNAVAILABLE);
+      if (config.paused)
+        throw new Error(
+          config.paused +
+            " Review and save the SMTP settings before another check.",
+        );
+      if (!this.isConnected(c.profileId))
+        throw new Error(
+          "Review and connect this mailbox before checking SMTP.",
+        );
+      this.busy.add(smtpKey);
+      try {
+        try {
+          await this.smtp.verify({
+            region: client.transport.secret.region,
+            username: client.account(c.accountId).email,
+            password: config.password,
+            server: config.server,
+          });
+        } catch (error) {
+          const failure = SmtpFailure.from(error);
+          config.paused = failure.message;
+          config.verifiedAt = undefined;
+          this.vault.persist();
+          throw failure;
+        }
+        config.verifiedAt = Date.now();
+        this.vault.persist();
+        return this.snapshot();
+      } finally {
+        this.busy.delete(smtpKey);
+      }
+    }
+    if (c.op === "recipientHistory") {
+      let load = this.historyLoads.get(draftKey);
+      if (!load) {
+        // One bounded Sent page per session; no provider requests per keystroke.
+        // Keep rejected promises too: optional suggestions must never retry a failed account.
+        load = (async () => {
+          const folders =
+            this.folderCache.get(draftKey) ||
+            ((await client.execute({
+              op: "folders",
+              profileId: c.profileId,
+              accountId: c.accountId,
+            })) as Folder[]);
+          this.folderCache.set(draftKey, folders);
+          const sent = folders.find(
+            (f) =>
+              f.type.toLowerCase() === "sent" ||
+              f.path.toLowerCase() === "/sent",
+          );
+          if (sent) {
+            const page = (await client.execute({
+              op: "list",
+              profileId: c.profileId,
+              accountId: c.accountId,
+              folderId: sent.id,
+              start: 1,
+              filter: "all",
+            })) as ListResult;
+            if (
+              this.clients.get(c.profileId) !== client ||
+              !this.isConnected(c.profileId)
+            )
+              return [];
+            this.vault.remember(
+              draftKey,
+              page.messages.flatMap((m) => [m.to, m.cc]),
+            );
+            this.vault.persist();
+          }
+          return this.vault.recipients(draftKey);
+        })();
+        this.historyLoads.set(draftKey, load);
+      }
+      await load;
+      return this.vault.recipients(draftKey);
+    }
     if (c.op === "pasteClipboard" || c.op === "importPaste") {
       const result: PasteResult = { attachments: [], images: [] };
       if (c.op === "pasteClipboard") {
@@ -342,6 +496,33 @@ export class MailService {
       validateRecipients(c.compose, client.account(c.accountId).aliases);
       const embedded =
         c.compose.format === "html" ? inlineImages(c.compose.body) : new Map();
+      const smtpConfig = embedded.size
+        ? this.vault.data.smtp?.[draftKey]
+        : undefined;
+      if (embedded.size) {
+        if (c.op === "saveCloudDraft")
+          throw new Error(
+            "Drafts with inline images are saved on this PC. A Zoho cloud copy would not preserve the images correctly.",
+          );
+        if (c.compose.schedule !== "now")
+          throw new Error(
+            "Messages with inline images can be sent now. Choose Send now or keep the draft for later.",
+          );
+        if (!smtpConfig?.password) throw new Error(INLINE_DELIVERY_UNAVAILABLE);
+        if (smtpConfig.paused)
+          throw new Error(
+            smtpConfig.paused +
+              " Review and save SMTP settings before another attempt.",
+          );
+        if (!this.isConnected(c.profileId))
+          throw new Error(
+            "Review and connect this mailbox before sending inline images.",
+          );
+        if (this.busy.has(smtpKey))
+          throw new Error(
+            "An SMTP operation is already running for this mailbox.",
+          );
+      }
       if (
         c.compose.attachments.reduce((n, a) => n + a.size, 0) +
           [...embedded.values()].reduce((n, a) => n + a.bytes.length, 0) >
@@ -349,9 +530,10 @@ export class MailService {
       )
         throw new Error("Attachments must total less than 20 MB.");
       this.busy.add(key);
+      if (embedded.size) this.busy.add(smtpKey);
       try {
         const attachments = [];
-        const inlineSources = new Map<string, string>();
+        const fileBytes: MailBytes[] = [];
         for (const a of c.compose.attachments) {
           const f = this.files.get(a.id);
           if (!f || f.profileId !== c.profileId || f.accountId !== c.accountId)
@@ -361,42 +543,96 @@ export class MailService {
             throw new Error(
               "An attachment changed. Remove it and attach the current file.",
             );
-          attachments.push(await client.upload(c.accountId, f.name, bytes));
+          if (embedded.size) fileBytes.push({ name: f.name, bytes });
+          else
+            attachments.push(await client.upload(c.accountId, f.name, bytes));
         }
-        for (const [src, image] of embedded) {
-          const uploaded = await client.upload(
-            c.accountId,
-            image.name,
-            image.bytes,
-            true,
+        let smtpOptions;
+        if (embedded.size) {
+          const headers =
+            c.compose.replyId && c.compose.replyFolderId
+              ? ((await client.execute({
+                  op: "headers",
+                  profileId: c.profileId,
+                  accountId: c.accountId,
+                  folderId: c.compose.replyFolderId,
+                  messageId: c.compose.replyId,
+                })) as string)
+              : undefined;
+          smtpOptions = smtpMessage(
+            client.account(c.accountId),
+            c.compose,
+            fileBytes,
+            headers,
           );
-          if (!("url" in uploaded) || !uploaded.url)
-            throw new Error("The inline image upload was not confirmed.");
-          const { url, ...attachment } = uploaded;
-          inlineSources.set(src, url);
-          attachments.push(attachment);
         }
         if (c.op === "send") {
           this.vault.data.submitted[key] = "pending";
-          this.vault.persist();
+          try {
+            this.vault.persist();
+          } catch (error) {
+            delete this.vault.data.submitted[key];
+            throw error;
+          }
         }
-        const response = await client.send(
-          c.accountId,
-          c.compose,
-          attachments,
-          c.op === "saveCloudDraft",
-          inlineSources,
-        );
+        let response: unknown;
+        let remembered = [c.compose.to, c.compose.cc, c.compose.bcc];
+        if (smtpOptions && smtpConfig) {
+          try {
+            const outcome = await this.smtp.send(
+              {
+                region: client.transport.secret.region,
+                username: client.account(c.accountId).email,
+                password: smtpConfig.password,
+                server: smtpConfig.server,
+              },
+              smtpOptions,
+            );
+            remembered = outcome.accepted;
+            smtpConfig.verifiedAt = Date.now();
+            response = {
+              messageId: outcome.messageId,
+              warning: outcome.rejected.length
+                ? `Zoho accepted the message for ${outcome.accepted.length} recipient(s), but rejected: ${outcome.rejected.join(", ")}. Do not resend it to recipients who already received it.`
+                : undefined,
+            };
+          } catch (error) {
+            const failure = SmtpFailure.from(error);
+            if (failure.safeToResubmit) delete this.vault.data.submitted[key];
+            if (failure.pause) {
+              smtpConfig.paused = failure.message;
+              smtpConfig.verifiedAt = undefined;
+            }
+            this.vault.persist();
+            throw failure;
+          }
+        } else
+          response = await client.send(
+            c.accountId,
+            c.compose,
+            attachments,
+            c.op === "saveCloudDraft",
+          );
         if (c.op === "send") {
           this.vault.data.submitted[key] = "sent";
+          this.vault.remember(draftKey, remembered);
           delete this.vault.data.drafts[draftKey + ":" + c.compose.id];
           if (this.vault.data.drafts[draftKey]?.id === c.compose.id)
             delete this.vault.data.drafts[draftKey];
-          this.vault.persist();
+          try {
+            this.vault.persist();
+          } catch {
+            return {
+              ...(response && typeof response === "object" ? response : {}),
+              warning:
+                "Zoho accepted the message, but its local receipt could not be saved. Check Sent before creating another copy.",
+            };
+          }
         }
         return response;
       } finally {
         this.busy.delete(key);
+        if (embedded.size) this.busy.delete(smtpKey);
       }
     }
     const result = await client.execute(c);

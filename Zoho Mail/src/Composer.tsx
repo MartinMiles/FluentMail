@@ -22,7 +22,9 @@ import {
   type LocalFile,
   type Signature,
   validateRecipients,
+  INLINE_DELIVERY_UNAVAILABLE,
   type PasteResult,
+  type SmtpStatus,
 } from "./shared";
 export function Composer({
   account,
@@ -30,12 +32,16 @@ export function Composer({
   demo,
   onClose,
   onSent,
+  smtpStatus,
+  onConfigureSmtp,
 }: {
   account: Account;
   initial: Compose;
   demo: boolean;
   onClose: () => void;
-  onSent: () => void;
+  onSent: (warning?: string) => void;
+  smtpStatus?: SmtpStatus;
+  onConfigureSmtp?: (account: Account) => void;
 }) {
   const [c, setC] = useState<Compose>(() => ({
     ...initial,
@@ -55,17 +61,49 @@ export function Composer({
   const [countdown, setCountdown] = useState<number | null>(null);
   const delay = useRef(new SendDelay());
   const preparing = useRef(false);
+  const [preparingSend, setPreparingSend] = useState(false);
   const alive = useRef(true);
   const preparationGeneration = useRef(0);
   const [pasting, setPasting] = useState(false);
   const [focusRevision, setFocusRevision] = useState(0);
   const [discard, setDiscard] = useState(false);
   const [signatures, setSignatures] = useState<Signature[]>([]);
+  const [recipientHistory, setRecipientHistory] = useState<string[]>([]);
   const sending = useRef(false);
   const latest = useRef(c);
   latest.current = c;
   const ref = { profileId: account.profileId, accountId: account.id };
-  const locked = busy || countdown !== null || pasting;
+  const locked = busy || preparingSend || countdown !== null || pasting;
+  const hasInline = /<img\b/i.test(c.body);
+  const validateInline = (message: Compose, draft = false) => {
+    if (demo || !/<img\b/i.test(message.body)) return;
+    if (draft)
+      throw new Error(
+        "Drafts with inline images are saved on this PC. A Zoho cloud copy would not preserve the images correctly.",
+      );
+    if (!smtpStatus?.configured) throw new Error(INLINE_DELIVERY_UNAVAILABLE);
+    if (smtpStatus.paused) throw new Error(smtpStatus.paused);
+    if (message.schedule !== "now")
+      throw new Error(
+        "Messages with inline images can be sent now. Choose Send now or keep the draft for later.",
+      );
+  };
+  useEffect(() => {
+    let active = true;
+    void call<string[]>({ op: "recipientHistory", ...ref })
+      .then((history) => {
+        if (active) setRecipientHistory(history);
+      })
+      .catch(() => {
+        if (active)
+          setStatus(
+            "Recipient suggestions unavailable. You can still enter addresses manually.",
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, [account.id, account.profileId]);
   useEffect(
     () => () => {
       alive.current = false;
@@ -89,7 +127,7 @@ export function Composer({
     );
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (sending.current || !hasContent(c)) return;
+      if (sending.current || preparing.current || !hasContent(c)) return;
       void call({ op: "saveLocalDraft", ...ref, compose: c })
         .then(() =>
           setStatus(
@@ -123,15 +161,17 @@ export function Composer({
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const close = async () => {
-    if (busy || pasting) return;
+    if (busy || preparing.current || pasting) return false;
     preparationGeneration.current++;
     delay.current.cancel();
     try {
       if (hasContent(latest.current))
         await call({ op: "saveLocalDraft", ...ref, compose: latest.current });
       onClose();
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     }
   };
   const submit = async (draft: boolean, message: Compose = c) => {
@@ -141,18 +181,33 @@ export function Composer({
     setError("");
     try {
       validateRecipients(message, account.aliases);
+      if (!demo && /<img\b/i.test(message.body)) {
+        await call({ op: "saveLocalDraft", ...ref, compose: message });
+      }
+      validateInline(message, draft);
       if (draft) {
         await call({ op: "saveCloudDraft", ...ref, compose: message });
         setStatus("A new copy was saved in Zoho Drafts.");
       } else {
-        await call({ op: "send", ...ref, compose: message, confirmed: true });
-        await call({
-          op: "saveLocalDraft",
+        const result = await call<{ warning?: string }>({
+          op: "send",
           ...ref,
-          compose: null,
-          draftId: message.id,
+          compose: message,
+          confirmed: true,
         });
-        onSent();
+        let warning = result?.warning;
+        try {
+          await call({
+            op: "saveLocalDraft",
+            ...ref,
+            compose: null,
+            draftId: message.id,
+          });
+        } catch {
+          warning =
+            "Zoho accepted the message, but local draft cleanup failed. Check Sent before creating another copy.";
+        }
+        onSent(warning);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -179,6 +234,7 @@ export function Composer({
     )
       return;
     preparing.current = true;
+    setPreparingSend(true);
     const generation = preparationGeneration.current;
     try {
       validateRecipients(c, account.aliases);
@@ -186,6 +242,7 @@ export function Composer({
       setDiscard(false);
       const message = structuredClone(c);
       await call({ op: "saveLocalDraft", ...ref, compose: message });
+      validateInline(message);
       if (!alive.current || generation !== preparationGeneration.current)
         return;
       delay.current.start(() => void submit(false, message), setCountdown);
@@ -193,6 +250,7 @@ export function Composer({
       setError((e as Error).message);
     } finally {
       preparing.current = false;
+      if (alive.current) setPreparingSend(false);
     }
   };
   const pasteMedia = async (files: File[]): Promise<PasteResult> => {
@@ -332,6 +390,7 @@ export function Composer({
                       : "Bcc recipients"
                 }
                 disabled={locked}
+                history={recipientHistory}
                 value={c[field]}
                 onChange={(value) => patch({ [field]: value })}
               />
@@ -383,6 +442,28 @@ export function Composer({
             {error}
           </div>
         )}
+        {!demo &&
+          hasInline &&
+          (!smtpStatus?.configured || smtpStatus.paused) &&
+          onConfigureSmtp && (
+            <div className="notice smtp-compose-hint">
+              <span>
+                Set up this mailbox to send images inside the message.
+              </span>
+              <button
+                type="button"
+                disabled={locked}
+                className="secondary"
+                onClick={() =>
+                  void close().then((closed) => {
+                    if (closed) onConfigureSmtp(account);
+                  })
+                }
+              >
+                Set up inline images
+              </button>
+            </div>
+          )}
         {discard && (
           <div className="send-review">
             <strong>Discard this local draft?</strong>
@@ -435,6 +516,13 @@ export function Composer({
             </div>
             <button
               type="button"
+              className="primary"
+              onClick={() => delay.current.sendNow()}
+            >
+              Send now
+            </button>
+            <button
+              type="button"
               className="secondary"
               onClick={() => {
                 delay.current.cancel();
@@ -462,9 +550,15 @@ export function Composer({
               }
             >
               <option value="now">Send now</option>
-              <option value="1">In 1 hour</option>
-              <option value="2">In 2 hours</option>
-              <option value="3">In 4 hours</option>
+              <option value="1" disabled={hasInline && !demo}>
+                In 1 hour
+              </option>
+              <option value="2" disabled={hasInline && !demo}>
+                In 2 hours
+              </option>
+              <option value="3" disabled={hasInline && !demo}>
+                In 4 hours
+              </option>
             </select>
             <button
               type="button"
@@ -479,9 +573,13 @@ export function Composer({
             <button
               type="button"
               className="icon-button"
-              title="Save a new copy to Zoho Drafts"
+              title={
+                hasInline && !demo
+                  ? "Inline-image drafts are saved on this PC"
+                  : "Save a new copy to Zoho Drafts"
+              }
               aria-label="Save copy to Zoho Drafts"
-              disabled={locked}
+              disabled={locked || (hasInline && !demo)}
               onClick={() => void submit(true)}
             >
               <Save size={18} />

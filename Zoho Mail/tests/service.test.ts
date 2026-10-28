@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from "vitest";
+﻿import { afterEach, describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { Vault } from "../desktop/vault";
 import { MailService } from "../desktop/service";
 import { Pacer } from "../desktop/transport";
 import { blankCompose } from "../src/shared";
+import { SmtpFailure, type SmtpSender } from "../desktop/smtp";
 const dirs: string[] = [];
 const cipher = {
   isEncryptionAvailable: () => true,
@@ -17,7 +18,7 @@ const ok = (data: unknown) =>
   new Response(JSON.stringify({ status: { code: 200 }, data }), {
     headers: { "Content-Type": "application/json" },
   });
-function setup() {
+function setup(smtp?: SmtpSender) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fluent-offline-test-"));
   dirs.push(dir);
   const vault = new Vault(path.join(dir, "fixture.vault"), cipher);
@@ -50,7 +51,7 @@ function setup() {
     vault,
     fetcher,
     dialogs,
-    service: new MailService(vault, dialogs, new Pacer(0), fetcher),
+    service: new MailService(vault, dialogs, new Pacer(0), fetcher, smtp),
   };
 }
 async function connect(s: ReturnType<typeof setup>) {
@@ -71,7 +72,470 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
 });
 describe("application boundary and persistence", () => {
-  it("uploads local inline images with isInline and rewrites their sources before sending", async () => {
+  it("does not authenticate SMTP for cloud image drafts or unsupported scheduling", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => ({
+        messageId: "fixture",
+        accepted: ["jamie@example.test"],
+        rejected: [],
+      })),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s);
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "fixture-smtp-password",
+      server: "standard",
+    });
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    expect(
+      (await s.service.invoke({ op: "saveCloudDraft", ...ref, compose })).ok,
+    ).toBe(false);
+    expect(
+      (
+        await s.service.invoke({
+          op: "send",
+          ...ref,
+          compose: { ...compose, schedule: "1" },
+          confirmed: true,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(smtp.send).not.toHaveBeenCalled();
+    expect(smtp.verify).not.toHaveBeenCalled();
+    expect(s.fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("does not retain a newly entered SMTP password when protected persistence fails", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    vi.spyOn(s.vault, "persist").mockImplementation(() => {
+      throw new Error("fixture encrypted storage unavailable");
+    });
+    expect(
+      (
+        await s.service.invoke({
+          op: "configureSmtp",
+          ...ref,
+          password: "fixture-smtp-password",
+          server: "standard",
+        })
+      ).ok,
+    ).toBe(false);
+    expect(JSON.stringify(s.service.snapshot())).not.toContain(
+      "fixture-smtp-password",
+    );
+    expect(s.vault.data.smtp?.[ref.profileId + ":100"]).toBeUndefined();
+  });
+  it("encrypts SMTP credentials, masks snapshots and verifies only on explicit request", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => ({
+        messageId: "fixture",
+        accepted: ["jamie@example.test"],
+        rejected: [],
+      })),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s),
+      key = ref.profileId + ":100";
+    expect(
+      (
+        await s.service.invoke({
+          op: "configureSmtp",
+          ...ref,
+          password: "fixture-smtp-password",
+          server: "standard",
+        })
+      ).ok,
+    ).toBe(true);
+    expect(smtp.verify).not.toHaveBeenCalled();
+    expect(smtp.send).not.toHaveBeenCalled();
+    expect(JSON.stringify(s.service.snapshot())).not.toContain(
+      "fixture-smtp-password",
+    );
+    expect(
+      fs.readFileSync(path.join(s.dir, "fixture.vault")).toString(),
+    ).not.toContain("fixture-smtp-password");
+    expect((await s.service.invoke({ op: "testSmtp", ...ref })).ok).toBe(true);
+    expect(smtp.verify).toHaveBeenCalledTimes(1);
+    expect(s.service.snapshot().smtp[key].verifiedAt).toBeGreaterThan(0);
+    await s.service.invoke({ op: "removeSmtp", ...ref });
+    expect(s.vault.data.smtp?.[key]).toBeUndefined();
+    expect(s.service.isConnected(ref.profileId)).toBe(true);
+  });
+  it("sends images through SMTP without any API upload/post and remembers accepted recipients only", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => ({
+        messageId: "fixture",
+        accepted: ["jamie@example.test"],
+        rejected: ["rejected@example.test"],
+      })),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s);
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "fixture-smtp-password",
+      server: "standard",
+    });
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test, rejected@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose });
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose,
+      confirmed: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok && (result.value as any).warning).toContain(
+      "rejected@example.test",
+    );
+    expect(smtp.send).toHaveBeenCalledTimes(1);
+    expect(smtp.verify).not.toHaveBeenCalled();
+    expect(smtp.send.mock.calls[0][0]).toMatchObject({
+      username: "alex@example.test",
+      region: "US",
+      password: "fixture-smtp-password",
+    });
+    expect(s.fetcher).toHaveBeenCalledTimes(2);
+    expect(s.vault.recipients(ref.profileId + ":100")).toEqual([
+      "jamie@example.test",
+    ]);
+    expect(s.vault.data.submitted[ref.profileId + ":" + compose.id]).toBe(
+      "sent",
+    );
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(smtp.send).toHaveBeenCalledTimes(1);
+  });
+  it("stops SMTP after authentication rejection while preserving API access and the draft", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => {
+        throw new SmtpFailure(
+          "Fixture SMTP sign-in rejected (535).",
+          true,
+          true,
+        );
+      }),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s),
+      key = ref.profileId + ":100";
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "fixture-smtp-password",
+      server: "standard",
+    });
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose });
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(
+      s.vault.data.submitted[ref.profileId + ":" + compose.id],
+    ).toBeUndefined();
+    expect(s.vault.data.drafts[key + ":" + compose.id]).toBeTruthy();
+    expect(s.service.snapshot().smtp[key].paused).toContain("535");
+    expect(s.service.isConnected(ref.profileId)).toBe(true);
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect((await s.service.invoke({ op: "testSmtp", ...ref })).ok).toBe(false);
+    expect(smtp.send).toHaveBeenCalledTimes(1);
+    expect(smtp.verify).not.toHaveBeenCalled();
+  });
+  it("never replays an uncertain SMTP send across restart and does not expose provider error text", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => {
+        throw new Error("private fixture-smtp-password provider trace");
+      }),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s);
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "fixture-smtp-password",
+      server: "standard",
+    });
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose,
+      confirmed: true,
+    });
+    expect(!result.ok && result.error).not.toMatch(
+      /private|fixture-smtp-password/,
+    );
+    expect(
+      new Vault(path.join(s.dir, "fixture.vault"), cipher).data.submitted[
+        ref.profileId + ":" + compose.id
+      ],
+    ).toBe("pending");
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(smtp.send).toHaveBeenCalledTimes(1);
+  });
+  it("does not reuse SMTP credentials from another profile with the same mailbox ID", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => ({
+        messageId: "fixture",
+        accepted: ["jamie@example.test"],
+        rejected: [],
+      })),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s);
+    s.vault.data.smtp = {
+      "other-profile:100": {
+        password: "other-fixture-password",
+        server: "standard",
+        paused: null,
+      },
+    };
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(smtp.send).not.toHaveBeenCalled();
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "own-fixture-password",
+      server: "standard",
+    });
+    await s.service.invoke({ op: "forget", profileId: ref.profileId });
+    expect(s.vault.data.smtp?.[ref.profileId + ":100"]).toBeUndefined();
+    expect(s.vault.data.smtp?.["other-profile:100"].password).toBe(
+      "other-fixture-password",
+    );
+  });
+  it("reports an accepted send honestly if final receipt storage fails", async () => {
+    const smtp = {
+      send: vi.fn<SmtpSender["send"]>(async () => ({
+        messageId: "fixture",
+        accepted: ["jamie@example.test"],
+        rejected: [],
+      })),
+      verify: vi.fn(async () => {}),
+    };
+    const s = setup(smtp),
+      ref = await connect(s);
+    await s.service.invoke({
+      op: "configureSmtp",
+      ...ref,
+      password: "fixture-smtp-password",
+      server: "standard",
+    });
+    const persist = s.vault.persist.bind(s.vault);
+    vi.spyOn(s.vault, "persist")
+      .mockImplementationOnce(persist)
+      .mockImplementationOnce(() => {
+        throw new Error("fixture storage failure");
+      });
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: '<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII="></p>',
+    };
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose,
+      confirmed: true,
+    });
+    expect(result.ok && (result.value as any).warning).toContain(
+      "Zoho accepted the message",
+    );
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(smtp.send).toHaveBeenCalledTimes(1);
+  });
+  it("loads fresh recipient history after an explicit reconnection", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    const folders = [
+      { folderId: "2", folderName: "Sent", folderType: "Sent", path: "/Sent" },
+    ];
+    s.fetcher
+      .mockResolvedValueOnce(ok(folders))
+      .mockResolvedValueOnce(
+        ok([{ messageId: "1", toAddress: "before@example.test" }]),
+      );
+    expect(
+      (await s.service.invoke({ op: "recipientHistory", ...ref })).ok,
+    ).toBe(true);
+    s.fetcher
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "fresh-fixture-token",
+            expires_in: 3600,
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        ok([
+          {
+            type: "ZOHO_ACCOUNT",
+            accountId: "100",
+            mailboxAddress: "alex@example.test",
+          },
+        ]),
+      );
+    expect(
+      (
+        await s.service.invoke({
+          op: "resume",
+          profileId: ref.profileId,
+          reviewed: true,
+        })
+      ).ok,
+    ).toBe(true);
+    s.fetcher
+      .mockResolvedValueOnce(ok(folders))
+      .mockResolvedValueOnce(
+        ok([{ messageId: "2", toAddress: "after@example.test" }]),
+      );
+    expect(await s.service.invoke({ op: "recipientHistory", ...ref })).toEqual({
+      ok: true,
+      value: ["after@example.test", "before@example.test"],
+    });
+    expect(s.fetcher).toHaveBeenCalledTimes(8);
+  });
+  it("seeds recipient history once from Sent and persists successful sends in the encrypted vault", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    s.fetcher.mockImplementation(async (url) =>
+      url.endsWith("/folders")
+        ? ok([
+            {
+              folderId: "2",
+              folderName: "Sent",
+              folderType: "Sent",
+              path: "/Sent",
+            },
+          ])
+        : url.includes("/messages/view?")
+          ? ok([
+              {
+                messageId: "300",
+                toAddress: "Jamie <jamie@example.test>",
+                ccAddress: "cc@example.test",
+              },
+            ])
+          : ok({ messageId: "400" }),
+    );
+    const first = await s.service.invoke({ op: "recipientHistory", ...ref });
+    expect(first).toEqual({
+      ok: true,
+      value: ["jamie@example.test", "cc@example.test"],
+    });
+    const count = s.fetcher.mock.calls.length;
+    await s.service.invoke({ op: "recipientHistory", ...ref });
+    expect(s.fetcher).toHaveBeenCalledTimes(count);
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      to: "new@example.test",
+      bcc: "hidden@example.test",
+    };
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(true);
+    const key = ref.profileId + ":100";
+    const restored = new Vault(path.join(s.dir, "fixture.vault"), cipher);
+    expect(restored.recipients(key)).toEqual([
+      "new@example.test",
+      "hidden@example.test",
+      "jamie@example.test",
+      "cc@example.test",
+    ]);
+    expect(restored.recipients("other-profile:100")).toEqual([]);
+    expect(restored.recipients(ref.profileId + ":200")).toEqual([]);
+    expect(
+      fs.readFileSync(path.join(s.dir, "fixture.vault")).toString(),
+    ).not.toContain("new@example.test");
+    const afterSend = await s.service.invoke({
+      op: "recipientHistory",
+      ...ref,
+    });
+    expect(afterSend.ok && afterSend.value).toEqual(restored.recipients(key));
+    await s.service.invoke({ op: "forget", profileId: ref.profileId });
+    expect(s.vault.recipients(key)).toEqual([]);
+  });
+  it("never retries a failed history seed and does not remember failed sends or cloud drafts", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    s.fetcher.mockResolvedValueOnce(ok({ messageId: "draft" }));
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      to: "unsent@example.test",
+    };
+    expect(
+      (await s.service.invoke({ op: "saveCloudDraft", ...ref, compose })).ok,
+    ).toBe(true);
+    expect(s.vault.recipients(ref.profileId + ":100")).toEqual([]);
+    s.fetcher.mockRejectedValueOnce(new Error("offline fixture"));
+    expect(
+      (await s.service.invoke({ op: "recipientHistory", ...ref })).ok,
+    ).toBe(false);
+    const count = s.fetcher.mock.calls.length;
+    expect(
+      (await s.service.invoke({ op: "recipientHistory", ...ref })).ok,
+    ).toBe(false);
+    expect(
+      (await s.service.invoke({ op: "send", ...ref, compose, confirmed: true }))
+        .ok,
+    ).toBe(false);
+    expect(s.fetcher).toHaveBeenCalledTimes(count);
+    expect(s.vault.recipients(ref.profileId + ":100")).toEqual([]);
+  });
+  it("retains an inline-image draft and blocks broken delivery before any upload or submission", async () => {
     const s = setup();
     const ref = await connect(s);
     s.fetcher.mockImplementation(async (url, init) =>
@@ -80,7 +544,7 @@ describe("application boundary and persistence", () => {
             storeName: "fixture-store",
             attachmentPath: "/compose/image.png",
             attachmentName: "image.png",
-            url: "/zm/ImageSignature?fileName=image.png&accountId=100&storeName=fixture-store",
+            url: "/zm/ImageSignature?fileName=image.png&accountId=29254000000005001&storeName=fixture-store",
           })
         : ok({ messageId: "400" }),
     );
@@ -92,18 +556,20 @@ describe("application boundary and persistence", () => {
       to: "jamie@example.test",
       body: `<p>Screenshot<img src="${src}"></p>`,
     };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose });
     const result = await s.service.invoke({
       op: "send",
       ...ref,
       compose,
       confirmed: true,
     });
-    expect(result.ok).toBe(true);
-    expect(s.fetcher.mock.calls[2][0]).toContain("isInline=true");
-    const sent = JSON.parse(s.fetcher.mock.calls[3][1].body as string);
-    expect(sent.content).toContain("/zm/ImageSignature?");
-    expect(sent.content).not.toContain("base64");
-    expect(sent.attachments[0].storeName).toBe("fixture-store");
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain("set up Inline images (SMTP)");
+    expect(s.fetcher).toHaveBeenCalledTimes(2);
+    expect(s.vault.data.submitted).toEqual({});
+    expect(s.vault.data.drafts[ref.profileId + ":100:" + compose.id].body).toBe(
+      compose.body,
+    );
   });
   it("imports copied file bytes behind an opaque attachment handle", async () => {
     const s = setup();

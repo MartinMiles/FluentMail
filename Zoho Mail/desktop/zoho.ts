@@ -9,6 +9,7 @@ import {
   validateRecipients,
 } from "../src/shared";
 import { ZohoTransport, remoteId, normalizeMessage } from "./transport";
+import { imageSources, resolveReceivedImages } from "./receivedImages";
 
 export class ZohoMail {
   accounts: Account[] = [];
@@ -102,9 +103,10 @@ export class ZohoMail {
           content: String(s.content || ""),
         }));
       case "list": {
+        const limit = c.limit || PAGE_SIZE;
         const q = new URLSearchParams({
           start: String(c.start),
-          limit: String(PAGE_SIZE),
+          limit: String(limit),
           includeto: "true",
         });
         if (c.query) {
@@ -114,8 +116,11 @@ export class ZohoMail {
           if (c.folderId) q.set("folderId", remoteId(c.folderId));
           if (c.labelId) q.set("labelid", remoteId(c.labelId));
           if (c.threadId) q.set("threadId", remoteId(c.threadId));
+          // This is a FILTER for conversation mail, not a grouped-list mode.
+          // Omit it for normal lists/history so standalone mail remains visible.
           q.set("includearchive", String(!c.folderId));
-          q.set("includesent", String(!c.folderId));
+          // folderId scopes the request; excluding Sent would hide the Sent folder's own mail.
+          q.set("includesent", "true");
           if (c.filter === "unread") q.set("status", "unread");
           if (c.filter === "flagged") q.set("flaggedMails", "true");
         }
@@ -128,7 +133,7 @@ export class ZohoMail {
           );
         return {
           messages: data.map(normalizeMessage),
-          hasMore: data.length === PAGE_SIZE,
+          hasMore: data.length === limit,
         };
       }
       case "detail": {
@@ -141,17 +146,37 @@ export class ZohoMail {
             "Unexpected message body response. Connection stopped without a retry.",
           );
         let attachments = [];
-        if (c.attachments) {
+        let inline = [];
+        const hasImages = imageSources(data.content).length > 0;
+        if (c.attachments || hasImages) {
           const info = await request(
-            messagePath(c.folderId, c.messageId) + "/attachmentinfo",
+            messagePath(c.folderId, c.messageId) +
+              "/attachmentinfo?includeInline=true",
           );
+          inline = Array.isArray(info?.inline) ? info.inline : [];
           attachments = (info?.attachments || []).map((a: any) => ({
             id: String(a.attachmentId),
             name: String(a.attachmentName),
             size: Number(a.attachmentSize),
           }));
         }
-        return { html: data.content, attachments };
+        const resolved = hasImages
+          ? await resolveReceivedImages(
+              data.content,
+              inline,
+              this.transport.secret.region,
+              (cid, name) =>
+                request(
+                  messagePath(c.folderId, c.messageId) +
+                    "/inline?" +
+                    new URLSearchParams({ contentId: cid, fileName: name }),
+                  "GET",
+                  undefined,
+                  true,
+                ),
+            )
+          : { html: data.content };
+        return { ...resolved, attachments };
       }
       case "headers":
         return String(
@@ -252,10 +277,12 @@ export class ZohoMail {
         url.pathname !== "/zm/ImageSignature" ||
         url.username ||
         url.password ||
-        url.searchParams.get("accountId") !== accountId
+        url.hash
       )
         throw new Error("Zoho returned an unexpected inline image URL.");
-      return { ...attachment, url: raw };
+      // Zoho's documented image URL can carry an internal account ID different
+      // from the upload API ID. Trust the scoped upload's same-region URL.
+      return { ...attachment, url: url.href };
     }
     return attachment;
   }

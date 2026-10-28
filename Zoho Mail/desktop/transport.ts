@@ -6,6 +6,18 @@ const JSONbig = JSONbigFactory({
   protoAction: "error",
   constructorAction: "error",
 });
+/** Fixed labels only: never expose account IDs, queries, message text or raw provider errors. */
+function operationLabel(path: string, method: string) {
+  const route = path.split("?")[0];
+  if (route === "/api/accounts") return "account discovery";
+  if (/\/folders$/.test(route) && method === "GET") return "folder loading";
+  if (/\/labels$/.test(route) && method === "GET") return "label loading";
+  if (/\/messages\/(view|search)$/.test(route)) return "mail listing";
+  if (/\/messages\/attachments$/.test(route)) return "attachment upload";
+  if (/\/messages(?:\/[^/]+)?$/.test(route) && method === "POST")
+    return "message submission";
+  return "mail operation";
+}
 export type Secret = {
   id: string;
   email: string;
@@ -155,6 +167,7 @@ export class ZohoTransport {
     body?: unknown,
     binary = false,
   ): Promise<any> {
+    const operation = operationLabel(path, method);
     if (!this.connected || this.secret.paused)
       throw new PausedError(
         this.secret.paused || "Connect this account to load mail.",
@@ -202,7 +215,7 @@ export class ZohoTransport {
       );
       if (res.status === 401 || res.status === 403 || res.status === 429)
         return this.stop(
-          `Zoho paused this connection (HTTP ${res.status}). No retry was made. Review account access or limits before reconnecting.`,
+          `Zoho paused this connection during ${operation} (HTTP ${res.status}). No retry was made. Review account access or limits before reconnecting.`,
         );
       if (res.status >= 500)
         return this.stop(
@@ -250,12 +263,12 @@ export class ZohoTransport {
       const code = Number(data?.status?.code);
       if ([401, 403, 429].includes(code))
         return this.stop(
-          `Zoho paused this connection (API ${code}). Review account access or limits before reconnecting.`,
+          `Zoho paused this connection during ${operation} (API ${code}). Review account access or limits before reconnecting.`,
         );
       if (!res.ok || code >= 400) {
         // Do not echo provider payloads: these can contain tokens, message text, or account information.
         return this.stop(
-          `Zoho rejected the operation (${code || res.status}). Review the operation and permissions; no retry was made.`,
+          `Zoho rejected ${operation} (HTTP ${res.status}, API ${Number.isFinite(code) ? code : "unknown"}). No retry was made. Review request details and mailbox access before reconnecting.`,
         );
       }
       if (!Number.isFinite(code) || code < 200 || code >= 300)
@@ -278,7 +291,10 @@ export function normalizeMessage(m: any) {
   return {
     id: String(m.messageId),
     folderId: String(m.folderId),
-    threadId: String(m.threadId || ""),
+    threadId: String(m.threadId || "") === "0" ? "" : String(m.threadId || ""),
+    threadCount: Math.max(1, Math.min(1_000_000, Number(m.threadCount) || 1)),
+    hasInline:
+      m.hasInline === true || ["true", "1"].includes(String(m.hasInline)),
     subject: String(m.subject || "(No subject)"),
     sender: String(m.sender || m.fromAddress || ""),
     from: String(m.fromAddress || ""),

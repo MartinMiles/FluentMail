@@ -16,6 +16,7 @@ import {
   type ListResult,
 } from "./shared";
 import { validEditorImage } from "./htmlPolicy";
+import { rememberRecipients } from "./recipientHistory";
 
 export class DemoMail {
   preferences: Preferences = { ...DEFAULT_PREFERENCES };
@@ -236,6 +237,25 @@ export class DemoMail {
       html: "<p>This message belongs to a different Zoho authorization. Replying uses the Studio mailbox automatically.</p>",
       attachments: [],
     });
+    // Synthetic cross-folder conversation with an embedded raster image.
+    const original = {
+      ...this.messages[0],
+      id: "900",
+      folderId: "2",
+      sender: "Alex Morgan",
+      from: "alex@example.test",
+      to: "jamie@example.test",
+      unread: false,
+      hasAttachment: false,
+      time: this.messages[0].time - 60_000,
+    };
+    this.messages.push(original);
+    const image =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII=";
+    this.details.set(original.id, {
+      html: `<p>Hi Jamie, here is the original project note.</p><p><img src="${image}" width="64" height="64" alt="Synthetic embedded image"></p>`,
+      attachments: [],
+    });
   }
   async invoke(input: Command): Promise<Result> {
     try {
@@ -393,7 +413,21 @@ export class DemoMail {
             content: "<p>Best,<br>Alex Morgan</p>",
           },
         ];
+      case "recipientHistory":
+        return rememberRecipients(
+          [],
+          this.messages
+            .filter(
+              (m) =>
+                m.profileId === a.profileId &&
+                m.accountId === a.id &&
+                m.folderId === "2",
+            )
+            .sort((x, y) => y.time - x.time)
+            .flatMap((m) => [m.to, m.cc]),
+        );
       case "list": {
+        const pageSize = c.limit || PAGE_SIZE;
         let list = this.messages.filter(
           (m) => m.accountId === a.id && m.profileId === a.profileId,
         );
@@ -418,9 +452,19 @@ export class DemoMail {
         list.sort((a, b) => b.time - a.time);
         return {
           messages: structuredClone(
-            list.slice(c.start - 1, c.start - 1 + PAGE_SIZE),
+            list.slice(c.start - 1, c.start - 1 + pageSize).map((m) => ({
+              ...m,
+              threadCount: m.threadId
+                ? this.messages.filter(
+                    (p) =>
+                      p.profileId === a.profileId &&
+                      p.accountId === a.id &&
+                      p.threadId === m.threadId,
+                  ).length
+                : 1,
+            })),
           ),
-          hasMore: list.length > c.start - 1 + PAGE_SIZE,
+          hasMore: list.length > c.start - 1 + pageSize,
         };
       }
       case "detail":

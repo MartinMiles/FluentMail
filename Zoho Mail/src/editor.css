@@ -166,6 +166,7 @@
   max-width: none;
 }
 .recipients {
+  position: relative;
   display: flex;
   flex: 1;
   align-items: center;
@@ -333,6 +334,58 @@
 }
 .send-countdown strong {
   display: block;
+}
+.send-countdown > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.send-countdown > button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.recipient-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 4px;
+  margin: 4px 0 0;
+  list-style: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px #0002;
+}
+.recipient-suggestions li {
+  padding: 9px 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recipient-suggestions li[aria-selected="true"] {
+  background: var(--active);
+  border-radius: 4px;
+}
+.smtp-settings {
+  margin-top: 22px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.smtp-settings form {
+  display: grid;
+  gap: 10px;
+}
+.smtp-buttons,
+.smtp-compose-hint {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.smtp-compose-hint {
+  justify-content: space-between;
 }
 .send-countdown span {
   display: block;

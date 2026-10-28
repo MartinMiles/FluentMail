@@ -4,7 +4,19 @@ A standalone Windows client for Zoho Mail, built for a familiar three-pane workf
 
 ## Run
 
-Open **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.2.0-Windows-x64.exe`**. The portable package includes its runtime; Node.js is not required on the receiving computer. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+Open **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.5.0-Windows-x64.exe`**. The portable package includes its runtime; Node.js is not required on the receiving computer. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+
+v1.5 adds conversation chains with message-count badges and safe received inline images. It also includes two-character recipient suggestions, Send now during the countdown, Del-to-Trash, single-line rows and optional SMTP sending for inline images. History and credentials stay encrypted and separate for every mailbox. See [the image investigation and resolution](docs/INLINE-IMAGES.md).
+
+### Send pasted images inside the message
+
+1. Connect the mailbox using its saved API connection.
+2. Open **Settings → Inline images (SMTP)** and select that mailbox.
+3. For a free organization, keep **Standard / free organization**. Enter its Zoho app password if two-factor authentication is on, or mailbox password if it is off. This is not the OAuth client secret. Click **Save SMTP password**.
+4. **Check SMTP connection** verifies sign-in without sending mail. A rejection pauses SMTP for review; it does not retry or change the subscription.
+5. Resume the draft, paste the image and click Send. The five-second timer and Send now/Cancel work normally. Images are embedded once in the body. Explicitly attached documents remain ordinary attachments.
+
+The SMTP password is stored only in the Windows-encrypted settings vault. Receiving and non-image sends keep using the API. Zoho normally saves SMTP messages in Sent automatically. Inline-image messages currently send immediately and their drafts stay on this PC; server scheduling and cloud draft copies remain available for supported API messages. SMTP availability depends on the actual account configuration. No real SMTP sign-in is claimed merely because an offline MIME test passed.
 
 Exit the old version before opening the new executable. Existing Windows-encrypted accounts and drafts are retained. The original v1.0 portable executable is kept as a separate file. Open **About Fluent Mail** to confirm the running version and creator information: Martin Miles, SafetyFluent, martin@safetyfluent.com.
 
@@ -47,19 +59,25 @@ These are mailbox scopes, not organization-administrator scopes. Alias addresses
 
 **Owner-reported live result:** on 2026-10-28 the owner confirmed that v1.0 connected and successfully delivered an attachment to an external mailbox. The assistant did not perform or observe those tests. The new background checking, token renewal, rich HTML and Windows notification behavior have been tested with offline fixtures, not production mailboxes.
 
+## Conversations and received images
+
+The circular badge beside a sender shows the conversation message count. A + marks a lower bound from recent Inbox/Sent summaries; opening the full conversation resolves its count. Open the row to see original messages and replies in date order, including Sent mail. The newest message opens first; click an older header or **Expand all** to read earlier messages. **Load older messages** retrieves another page of long history. Reply buttons under each message reply to that specific message. Deleting or moving operates on the selected message, rather than silently changing the whole conversation.
+
+Embedded raster images display in the body without enabling remote tracking images. Unsupported, missing or oversized embedded parts show a warning. No new authorization code or scope is needed for these features.
+
 ## Everyday use
 
 - Search accepts Zoho search syntax, for example `subject:proposal` or `from:someone@example.com`. Press Enter to search; typing does not issue requests.
 - Opening a message reads its content; use the toolbar to explicitly mark it read/unread.
 - Archive, flags, spam/not-spam, labels and moves operate on the selected messages. Trash is a move, not permanent deletion. Permanent delete/empty-folder commands are intentionally absent.
 - Compose now uses a WYSIWYG HTML editor with formatting, fonts/sizes, colors, lists, alignment, quotes, safe links, emoji and undo/redo. Use To recipient chips and the Cc/Bcc controls, authorized From addresses, reply/reply-all, forwarding, file attachments, formatted signatures and Zoho's 1/2/4-hour delayed-send presets. Ctrl+Enter starts the same five-second send countdown; the maximize control provides more editing space. Older plain-text drafts are converted safely when opened.
-- **Send** immediately starts a visible five-second countdown. **Cancel send** stops it and returns to editing. No uploads or send request begin during that window; at expiry the app starts uploading and submitting the message. There is no second confirmation button. Closing the composer or explicitly exiting during the countdown cancels the pending submission and preserves the draft. A successful API response means Zoho accepted the operation, not that every recipient received it.
+- **Send** starts a five-second countdown for a valid supported message. **Send now** submits immediately; **Cancel send** returns to editing. No uploads or send request begin until expiry or Send now. Closing the composer or explicitly exiting during the countdown cancels the pending submission and preserves the draft. A successful API response means Zoho accepted the operation, not that every recipient received it.
 - **Paste images/files:** Ctrl+V in the editor inserts clipboard raster images directly into the body. Files copied in Windows Explorer become attachments. Text and formatted text still paste normally. Clipboard data is read only for the paste action; no clipboard history or monitoring is used. PNG/JPEG/GIF/WebP images are supported; SVG is not embedded. Network file paths must be copied locally first. Inline images are stored in the encrypted local draft; ordinary clipboard-file handles must be reattached after restarting, like other session attachment handles.
-- Inline sending uses Zoho's documented `isInline=true` upload and its returned image URL. Recipient-side inline rendering is not yet live-verified. Remote images remain blocked in the reader. Use v1.2 for new inline-image drafts; older executables do not preserve this new image-editing support.
+- Pasted images stay in encrypted local drafts and use the selected mailbox's configured SMTP connection when sent. They do not become ordinary image-file copies. Images require per-mailbox setup; cloud image drafts and scheduling are disabled rather than silently dropping images. Unsupported server-image references are removed from quoted replies. The reader still blocks remote images.
 - Local drafts are encrypted and stored separately per authorization/mailbox/draft. Compose lets you resume saved drafts or start another. Closing a composer preserves it; Discard removes only that local draft.
 - **Save copy to Zoho Drafts** creates a new cloud draft. It does not silently overwrite an existing server draft. Opening a cloud draft uses **Edit as new message**; the original stays in Zoho.
 - Attachments stay local until send/cloud-save. The client caps uploads at 20 MB total and downloads at 30 MB. Files must be reattached after restarting. Forwarding and editing-as-new do not automatically copy the original attachments; download and reattach the ones you want.
-- Remote images, embedded forms, scripts, unsafe URLs and active content are removed from displayed messages. Safe text formatting is preserved. Web links are listed separately and require confirmation before opening in your browser. Inline images and arbitrary CSS layouts are not reproduced. Pasted and outgoing rich HTML are independently sanitized.
+- Remote images, embedded forms, scripts, unsafe URLs and active content are removed from displayed messages. Safe text formatting is preserved. Web links are listed separately and require confirmation before opening in your browser. Embedded PNG/JPEG/GIF/WebP images are downloaded through authenticated Zoho APIs and displayed safely. Arbitrary CSS layouts are not reproduced. Pasted and outgoing rich HTML are independently sanitized.
 - Automatic checks run for connected accounts. Healthy expiring OAuth tokens renew once through the shared rate limiter. Accounts start disconnected on launch and do not automatically reconnect after a rejected or uncertain request. There is no telemetry or Windows login auto-start.
 
 ## Keyboard shortcuts
