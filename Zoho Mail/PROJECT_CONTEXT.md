@@ -40,6 +40,10 @@ Final delivery: both unpacked and portable v1.1 Windows smoke tests passed, incl
 
 ## Objective and accepted scope
 
+### Reported startup confusion — 2026-10-28
+
+After launching 1.1, the owner reported that an existing connected mailbox disappeared. Static review confirms that `MailService.snapshot().accounts` is populated only from the in-memory clients map, which is empty on a fresh launch; saved profiles are returned separately and should appear under Settings → Your accounts. Thus the main mailbox view can appear empty even with a saved connection. This is a misleading startup UX, not evidence that the remote mailbox was deleted. A metadata-only filesystem check confirmed the configured encrypted settings file exists. Its contents were not decrypted, and no authentication attempt occurred. Whether the owner's particular profile is listed in Settings remains unconfirmed; if absent there too, investigate storage/migration separately rather than assuming it is just the known disconnected-start behavior.
+
 The owner dislikes Zoho's webmail interface and wants a standalone Windows client with a familiar mix of Outlook and Gmail conventions, without another mail subscription. They explicitly chose the documented-API approach, requested the `Zoho Mail` subdirectory, asked for careful planning and testing, and prohibited unnecessary complexity or invented unsupported features.
 
 The owner subsequently made multi-mailbox support explicit: `info@safetyfluent.com`, `martin@safetyfluent.com`, and `martin@deloran.us` should coexist, even if the latter belongs to another business and another free Zoho organization. These are desired future connections, not testing accounts. Separate identities need separate OAuth authorizations. One authorization may return multiple mailbox accounts; aliases are not separate mailboxes.
