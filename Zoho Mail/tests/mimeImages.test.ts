@@ -12,6 +12,7 @@ describe("private MIME image diagnostic", () => {
       imageElements: 1,
       sourceKinds: { cid: 1 },
       imageParts: 1,
+      ordinaryAttachmentParts: 0,
       inlineImageParts: 1,
       unmatchedCidReferences: 0,
       hasRelatedContainer: true,

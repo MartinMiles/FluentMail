@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.6.0 — 2026-10-28
+
+- Make conversation chronology explicit: newest first by default, a remembered oldest-first option, independent Latest/Earlier/Unread labels, meaningful timestamps and chronological sequence numbers when full history is available.
+- Add a sticky reading context, Go to latest and Collapse earlier messages. Reversing order retains cached bodies and the current reply target without provider requests.
+- Open the latest cross-folder reply initially and preserve an earlier message being read when new replies arrive. Request summary pages explicitly by descending date.
+- Prefer per-message provider metadata over the list row's aggregate state, so an earlier unread message does not incorrectly make the latest card unread.
+- Document comparative research across Gmail, Outlook, Zoho, Apple Mail, Thunderbird, Fastmail and Proton Mail. Add public screenshots containing only fictional mail.
+
+## 1.5.0 ? 2026-10-28
+
+- Display received embedded raster images through authenticated, message-scoped Zoho downloads. Match MIME CIDs to provider metadata and show images inside the sandbox; remote tracking images remain blocked.
+- Add conversation rows with circular message counts and chronological, expandable original/reply cards spanning Inbox and Sent. Load older history explicitly and reply/forward from the chosen message.
+- Preserve mailbox isolation and row selection as replies arrive. Fetch expanded bodies lazily, deduplicate image downloads, bound image memory and show unsupported-image warnings.
+- Owner reports v1.4 SMTP inline delivery to Gmail succeeded; receiving images and conversation display were separate missing client features.
+
+## 1.4.0 — 2026-10-28
+
+- Add owner-approved Zoho SMTP sending for messages with pasted images, retaining API receiving and ordinary API sends. Generate standard matching inline CID/MIME parts exactly once, without public hosting or duplicate ordinary image files.
+- Add per-mailbox encrypted SMTP/app-password setup and explicit connection verification. Snapshots contain status only; source-mailbox changes clear password inputs. Standard/pro server selection does not change the subscription.
+- Fixed TLS 465 with certificate/SNI checks, no automatic retry or pooling. SMTP failures are isolated from API receiving; uncertain sends remain protected by the persistent submission ledger.
+- Preserve aliases, Bcc privacy and RFC reply threading; record accepted recipients only and report partial delivery or post-acceptance local cleanup failures honestly.
+- Lock edits during draft preparation. Inline-image scheduling/cloud-copy controls explain the supported local-draft/send-now behavior. Remove unsupported ghost image nodes from quoted replies.
+- Retain all v1.3 recipient suggestions, Send now, Del-to-Trash, compact rows and account-state fixes. Live SMTP sign-in requires the actual mailbox/app password; offline MIME validation alone does not establish account eligibility.
+
 ## 1.3.0 — 2026-10-28
 
 - Suggest previously emailed recipients after two characters, with mailbox-scoped encrypted history, keyboard/mouse selection and a bounded recent-Sent seed.

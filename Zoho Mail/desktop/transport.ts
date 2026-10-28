@@ -291,7 +291,10 @@ export function normalizeMessage(m: any) {
   return {
     id: String(m.messageId),
     folderId: String(m.folderId),
-    threadId: String(m.threadId || ""),
+    threadId: String(m.threadId || "") === "0" ? "" : String(m.threadId || ""),
+    threadCount: Math.max(1, Math.min(1_000_000, Number(m.threadCount) || 1)),
+    hasInline:
+      m.hasInline === true || ["true", "1"].includes(String(m.hasInline)),
     subject: String(m.subject || "(No subject)"),
     sender: String(m.sender || m.fromAddress || ""),
     from: String(m.fromAddress || ""),

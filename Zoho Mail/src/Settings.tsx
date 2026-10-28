@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { ShieldCheck, Plug, Unplug, Trash2, ExternalLink } from "lucide-react";
 import { Modal } from "./Modal";
 import { call } from "./api";
+import { SmtpSettings } from "./SmtpSettings";
 import {
   REGIONS,
   SCOPES,
@@ -17,6 +18,7 @@ export function Settings({
   dark,
   onTheme,
   onConnected,
+  smtpAccountKey,
 }: {
   snapshot: Snapshot;
   onUpdate: (s: Snapshot) => void;
@@ -24,6 +26,7 @@ export function Settings({
   dark: boolean;
   onTheme: () => void;
   onConnected?: (snapshot: Snapshot, email: string) => void;
+  smtpAccountKey?: string;
 }) {
   const [email, setEmail] = useState("");
   const [region, setRegion] = useState<Region>("US");
@@ -39,21 +42,38 @@ export function Settings({
   const errorRef = useRef<HTMLDivElement>(null);
   const prefs = snapshot.preferences || DEFAULT_PREFERENCES;
   useEffect(() => {
+    let active = true;
+    void call<Snapshot>({ op: "snapshot" })
+      .then((s) => {
+        if (active) onUpdate(s);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
     if (error) {
       errorRef.current?.scrollIntoView?.({ block: "nearest" });
       errorRef.current?.focus();
     }
   }, [error]);
-  const run = async (fn: () => Promise<Snapshot>, connectedEmail?: string) => {
+  const run = async (
+    fn: () => Promise<Snapshot>,
+    connectedEmail?: string,
+    successMessage?: string,
+  ) => {
     if (active.current) return;
     active.current = true;
     setBusy(true);
     setError("");
+    setFeedback("");
     try {
       const next = await fn();
       onUpdate(next);
       setReview("");
       setRemove("");
+      if (successMessage) setFeedback(successMessage);
       if (connectedEmail) {
         onConnected?.(next, connectedEmail);
         onClose();
@@ -331,12 +351,18 @@ export function Settings({
             </button>
           </div>
         )}
+        <SmtpSettings
+          snapshot={snapshot}
+          busy={busy}
+          preferredAccountKey={smtpAccountKey}
+          run={(fn, message) => run(fn, undefined, message)}
+        />
         {!snapshot.demo && (
           <>
             <h3>Add a Zoho account</h3>
             <p className="muted">
-              Use your own OAuth Self Client. Mailbox passwords are never
-              requested.
+              Use your own OAuth Self Client for the API connection. Optional
+              inline-image sending has a separate SMTP/app password above.
             </p>
             <details className="setup-guide">
               <summary>One-time connection instructions</summary>

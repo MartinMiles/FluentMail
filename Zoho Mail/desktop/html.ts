@@ -4,7 +4,7 @@ export function sanitizeOutgoingHtml(
   html: string,
   inlineSources: ReadonlyMap<string, string> = new Map(),
 ) {
-  return sanitize(html, {
+  const clean = sanitize(html, {
     allowedTags: MAIL_TAGS,
     allowedAttributes: {
       "*": ["style"],
@@ -16,6 +16,7 @@ export function sanitizeOutgoingHtml(
     },
     allowedStyles: { "*": MAIL_STYLES },
     allowedSchemes: ["https", "http", "mailto"],
+    allowedSchemesByTag: { img: ["https", "http", "cid"] },
     allowProtocolRelative: false,
     transformTags: {
       img: (_tag, a) => {
@@ -39,4 +40,25 @@ export function sanitizeOutgoingHtml(
     },
     exclusiveFilter: (frame) => frame.tag === "img" && !frame.attribs.src,
   });
+  // Zoho's send API recognizes inline-upload references only with literal query
+  // separators. Its parser leaves &amp;-encoded references as private preview
+  // URLs instead of creating MIME Content-IDs. Restore ONLY the documented keys
+  // in an exact, already-vetted image source. Links/other HTML stay sanitized.
+  const trusted = new Set(
+    [...inlineSources.values()].map((src) =>
+      src.replaceAll("&", "&amp;").replaceAll('"', "&quot;"),
+    ),
+  );
+  return clean.replace(/<img\b[^>]*>/gi, (tag) =>
+    tag.replace(/\bsrc="([^"]*)"/i, (attribute, src: string) =>
+      trusted.has(src)
+        ? 'src="' +
+          src.replace(
+            /&amp;(?=(?:fileName|accountId|storeName|frm|fileId)=)/g,
+            "&",
+          ) +
+          '"'
+        : attribute,
+    ),
+  );
 }

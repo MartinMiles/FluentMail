@@ -4,6 +4,7 @@ import {
   type Compose,
   type Preferences,
   preferencesSchema,
+  type SmtpServer,
 } from "../src/shared";
 import type { Secret, SecretStore } from "./transport";
 import { rememberRecipients } from "../src/recipientHistory";
@@ -19,6 +20,15 @@ type Data = {
   submitted: Record<string, "pending" | "sent">;
   preferences?: Preferences;
   recipientHistory?: Record<string, string[]>;
+  smtp?: Record<
+    string,
+    {
+      password: string;
+      server: SmtpServer;
+      paused: string | null;
+      verifiedAt?: number;
+    }
+  >;
 };
 export class Vault implements SecretStore {
   data: Data = { version: 1, profiles: [], drafts: {}, submitted: {} };
@@ -76,6 +86,8 @@ export class Vault implements SecretStore {
       if (key.startsWith(id + ":")) delete this.data.drafts[key];
     for (const key of Object.keys(this.data.recipientHistory || {}))
       if (key.startsWith(id + ":")) delete this.data.recipientHistory![key];
+    for (const key of Object.keys(this.data.smtp || {}))
+      if (key.startsWith(id + ":")) delete this.data.smtp![key];
     this.persist();
   }
 }

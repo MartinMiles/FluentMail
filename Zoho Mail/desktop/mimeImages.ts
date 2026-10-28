@@ -11,6 +11,7 @@ export function inspectMimeImages(mime: string) {
     ids = new Set<string>();
   const sourceKinds: Record<string, number> = {};
   let imageParts = 0,
+    ordinaryAttachmentParts = 0,
     inlineImageParts = 0,
     parts = 0,
     hasRelatedContainer = false;
@@ -40,6 +41,8 @@ export function inspectMimeImages(mime: string) {
       return;
     }
     const cid = header("content-id").replace(/^<|>$/g, "");
+    if (/^attachment\b/i.test(header("content-disposition")))
+      ordinaryAttachmentParts++;
     if (cid) ids.add(cid);
     if (/^image\//i.test(type)) {
       imageParts++;
@@ -85,6 +88,7 @@ export function inspectMimeImages(mime: string) {
     imageElements: Object.values(sourceKinds).reduce((n, v) => n + v, 0),
     sourceKinds,
     imageParts,
+    ordinaryAttachmentParts,
     inlineImageParts,
     unmatchedCidReferences: refs.filter((id) => !ids.has(id)).length,
     hasRelatedContainer,

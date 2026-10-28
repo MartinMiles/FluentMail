@@ -2,6 +2,22 @@ import { describe, it, expect } from "vitest";
 import { sanitizeOutgoingHtml } from "../desktop/html";
 import { textToHtml, validMailLink } from "../src/htmlPolicy";
 describe("outgoing rich email boundary", () => {
+  it("preserves literal query separators only for vetted Zoho inline-image references", () => {
+    const local = "data:image/png;base64,AAAA";
+    const remote =
+      "https://mail.zoho.com/zm/ImageSignature?fileName=fixture.png&accountId=900&storeName=fixture&frm=c";
+    const clean = sanitizeOutgoingHtml(
+      '<p><img src="' +
+        local +
+        '" onerror="bad()"></p><a href="https://example.test/?x=1&amp;accountId=900">link</a>',
+      new Map([[local, remote]]),
+    );
+    expect(clean).toContain('src="' + remote + '"');
+    expect(clean).not.toContain("onerror");
+    expect(clean).toContain(
+      'href="https://example.test/?x=1&amp;accountId=900"',
+    );
+  });
   it("preserves supported rich formatting for Zoho HTML messages", () => {
     const clean = sanitizeOutgoingHtml(
       '<p style="text-align: center"><strong>Hello</strong> <u>team</u></p><ol><li>Review</li></ol><span style="color: #123456; font-size: 18px; background-color: #fff1a6">Update</span>',

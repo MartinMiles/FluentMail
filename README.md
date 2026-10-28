@@ -2,6 +2,20 @@
 
 A standalone Windows client for Zoho Mail by Martin Miles / SafetyFluent. The application source is in **[Zoho Mail](Zoho%20Mail/README.md)**.
 
+**[Download the Windows application](https://github.com/safetyfluent/FluentMail/releases/latest)** · **[Setup and everyday use](Zoho%20Mail/README.md)**
+
+![Fluent Mail: conversation history, an explicit Latest message, and an inline image](Zoho%20Mail/docs/screenshots/1.6/conversation.jpg)
+
+*The actual application interface with fictional sample mail. This screenshot shows the optional oldest-first view; the default is newest first. Latest and Earlier labels stay clear in either order.*
+
+- Read multiple Zoho mailboxes and businesses in one application.
+- Follow conversation chains with explicit Latest/Earlier labels, sequence numbers and a quick return to the latest reply.
+- Compose rich text, paste images, attach files and use the five-second cancellable Send countdown.
+- Keep incoming checks and notifications active in the Windows system tray.
+- Keep account credentials, recipient history and drafts protected by Windows encryption on this PC.
+
+[See the default newest-first view](Zoho%20Mail/docs/screenshots/1.6/newest-first.jpg) and [the research behind conversation ordering](Zoho%20Mail/docs/CONVERSATION-UX.md).
+
 Before contributing, read [AGENTS.md](AGENTS.md) and [PROJECT_CONTEXT.md](Zoho%20Mail/PROJECT_CONTEXT.md). The context file records design decisions, tested behavior, investigations and unresolved limitations so work can resume without repeating the research.
 
 ## Develop on Windows
@@ -19,4 +33,6 @@ npm run demo
 
 The repository contains source, documentation, synthetic tests and design assets. Real credentials, mail, recipient history and drafts remain in the Windows-encrypted settings vault outside the repository; generated packages and diagnostic outputs are ignored.
 
-**Current limitation:** pasted images can be edited and saved locally, but live inline-image sending is blocked pending a verified Zoho API MIME association method. Tested upload-preview URLs, HTML data URIs and filename/path CID references did not produce working inline images at Gmail. See [the investigation](Zoho%20Mail/docs/INLINE-IMAGES.md). Ordinary text, rich text and file attachments remain supported.
+**Inline images:** v1.4 uses Zoho SMTP to send proper MIME inline images without ordinary image-file copies. Receiving and ordinary sending remain on the API. Configure each mailbox under Settings → Inline images (SMTP); the SMTP/app password is encrypted in the existing vault. Image messages send now and image drafts stay local. See [the investigation and resolution](Zoho%20Mail/docs/INLINE-IMAGES.md). Live SMTP account access requires a valid mailbox/app password; no subscription change is made.
+
+**Conversations and received images:** v1.5 adds expandable original/reply chains and circular message-count badges, plus authenticated embedded-image display. Remote tracking images remain blocked. See the application README for count limits and supported image formats.
