@@ -6,8 +6,15 @@ import {
   fireEvent,
   waitFor,
   cleanup,
+  within,
 } from "@testing-library/react";
-import { groupConversations, conversationKey } from "../src/conversations";
+import {
+  groupConversations,
+  conversationKey,
+  newestMessages,
+  readConversationOrder,
+  CONVERSATION_ORDER_KEY,
+} from "../src/conversations";
 import type { Message, Account, Command, Detail } from "../src/shared";
 const { call } = vi.hoisted(() => ({ call: vi.fn() }));
 vi.mock("../src/api", () => ({ call }));
@@ -49,6 +56,8 @@ const image =
 afterEach(() => {
   cleanup();
   call.mockReset();
+  localStorage.clear();
+  vi.restoreAllMocks();
 });
 describe("conversation identity", () => {
   it("groups actual thread IDs, deduplicates pages, and keeps newest representative metadata", () => {
@@ -107,6 +116,194 @@ function setup(members = [reply, original], hasMore = false) {
   return { props, ...callbacks };
 }
 describe("conversation reader", () => {
+  it("shows the latest card in oldest-first mode before a slow image body finishes loading", async () => {
+    localStorage.setItem(CONVERSATION_ORDER_KEY, "oldest");
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const state = setup();
+    let finish!: (detail: Detail) => void;
+    call.mockImplementation(async (c: Command) =>
+      c.op === "list"
+        ? { messages: [reply, original], hasMore: false }
+        : new Promise<Detail>((resolve) => {
+            finish = resolve;
+          }),
+    );
+    render(<ConversationReader {...state.props} />);
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    expect(screen.getByText("Opening message…")).toBeTruthy();
+    finish({ html: "<p>Loaded</p>", attachments: [] });
+    await screen.findByTitle("Email content");
+  });
+  it("defaults to newest first and distinguishes latest from an older unread message", async () => {
+    const state = setup([
+      { ...reply, unread: false },
+      { ...original, unread: true },
+    ]);
+    render(<ConversationReader {...state.props} />);
+    await screen.findByTitle("Email content");
+    const cards = screen.getAllByRole("article");
+    expect(cards[0].getAttribute("aria-label")).toBe(
+      "Latest message from Jamie",
+    );
+    expect(within(cards[0]).getByText("Latest")).toBeTruthy();
+    expect(within(cards[0]).getByText("Message 2 of 2")).toBeTruthy();
+    expect(within(cards[1]).getByText("Unread")).toBeTruthy();
+    expect(within(cards[1]).getByText("Earlier")).toBeTruthy();
+    expect(within(cards[1]).queryByText("Latest")).toBeNull();
+    expect(screen.getByText("Latest message at the top")).toBeTruthy();
+  });
+  it("reverses display order without changing sequence, selection, bodies or requests and remembers it", async () => {
+    const state = setup();
+    const view = render(<ConversationReader {...state.props} />);
+    await screen.findByTitle("Email content");
+    const count = call.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("Conversation order"), {
+      target: { value: "oldest" },
+    });
+    const cards = screen.getAllByRole("article");
+    expect(cards[0].getAttribute("aria-label")).toBe(
+      "Earlier message from Alex",
+    );
+    expect(within(cards[0]).getByText("Message 1 of 2")).toBeTruthy();
+    expect(within(cards[1]).getByText("Latest")).toBeTruthy();
+    expect(call).toHaveBeenCalledTimes(count);
+    expect(state.onActive).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "2" }),
+      expect.objectContaining({ html: expect.stringContaining(image) }),
+    );
+    expect(localStorage.getItem(CONVERSATION_ORDER_KEY)).toBe("oldest");
+    view.unmount();
+    render(<ConversationReader {...state.props} />);
+    expect(
+      (screen.getByLabelText("Conversation order") as HTMLSelectElement).value,
+    ).toBe("oldest");
+    await screen.findByTitle("Email content");
+  });
+  it("opens the latest cross-folder reply even when the clicked row is an older Sent message", async () => {
+    const state = setup();
+    render(<ConversationReader {...state.props} row={original} />);
+    await screen.findByTitle("Email content");
+    expect(call.mock.calls.find(([c]) => c.op === "detail")?.[0]).toMatchObject(
+      { messageId: "2", folderId: "1" },
+    );
+    expect(
+      screen
+        .getByRole("article", { name: "Latest message from Jamie" })
+        .querySelector('[aria-expanded="true"]'),
+    ).toBeTruthy();
+  });
+  it("returns from an older reply target to latest using cached content and preserves the chosen order", async () => {
+    localStorage.setItem(CONVERSATION_ORDER_KEY, "oldest");
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const state = setup();
+    render(<ConversationReader {...state.props} />);
+    await screen.findByTitle("Email content");
+    fireEvent.click(
+      within(
+        screen.getByRole("article", { name: "Earlier message from Alex" }),
+      ).getByRole("button", { expanded: false }),
+    );
+    await waitFor(() =>
+      expect(state.onActive).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: "1" }),
+        expect.objectContaining({ html: expect.stringContaining(image) }),
+      ),
+    );
+    expect(
+      screen.getByText("Viewing an earlier message. Reply uses that message."),
+    ).toBeTruthy();
+    expect(screen.getByText("Reply to this earlier message")).toBeTruthy();
+    const count = call.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Go to latest" }));
+    expect(state.onActive).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "2" }),
+      expect.objectContaining({ html: expect.stringContaining(image) }),
+    );
+    expect(call).toHaveBeenCalledTimes(count);
+    expect(screen.getByText("Latest message at the bottom")).toBeTruthy();
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+  });
+  it("does not invent sequence numbers or original-message labels for a partial page", async () => {
+    const state = setup([reply, original], true);
+    render(<ConversationReader {...state.props} />);
+    await screen.findByTitle("Email content");
+    expect(screen.queryByText("Message 1 of 2")).toBeNull();
+    expect(
+      screen.getByText("Earlier message", {
+        selector: ".conversation-sequence",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Load older messages" }),
+    ).toBeTruthy();
+  });
+  it("keeps the older message being read when a new latest reply arrives", async () => {
+    const state = setup();
+    const view = render(<ConversationReader {...state.props} />);
+    await screen.findByTitle("Email content");
+    fireEvent.click(
+      within(
+        screen.getByRole("article", { name: "Earlier message from Alex" }),
+      ).getByRole("button", { expanded: false }),
+    );
+    await waitFor(() =>
+      expect(state.onActive).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: "1" }),
+        expect.anything(),
+      ),
+    );
+    const newest = { ...reply, id: "3", time: 3, sender: "Taylor" };
+    call.mockImplementation(async (c: Command) =>
+      c.op === "list"
+        ? { messages: [newest, reply, original], hasMore: false }
+        : {
+            html: `<p>${"messageId" in c ? c.messageId : ""}</p>`,
+            attachments: [],
+          },
+    );
+    view.rerender(
+      <ConversationReader
+        {...state.props}
+        row={{ ...newest, id: "thread:500", remoteId: "3" }}
+        revision={1}
+      />,
+    );
+    await screen.findByText("Message 3 of 3");
+    expect(screen.getAllByRole("article")[0].getAttribute("aria-label")).toBe(
+      "Latest message from Taylor",
+    );
+    expect(state.onActive).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "1" }),
+      expect.anything(),
+    );
+    expect(
+      screen.getByText("Viewing an earlier message. Reply uses that message."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Go to latest" }));
+    await waitFor(() =>
+      expect(state.onActive).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: "3" }),
+        expect.objectContaining({ html: "<p>3</p>" }),
+      ),
+    );
+  });
+  it("shows missing dates honestly and preserves provider ordering without guessing from IDs", async () => {
+    const missing = { ...reply, id: "9999999999999999999", time: 0 };
+    expect(newestMessages([missing, original])[0]).toBe(missing);
+    const state = setup([missing, original]);
+    render(<ConversationReader {...state.props} row={missing} />);
+    await screen.findByTitle("Email content");
+    expect(screen.getByText("Time unavailable")).toBeTruthy();
+    expect(screen.queryByText("Message 1 of 2")).toBeNull();
+  });
+  it("gracefully defaults when local UI preference storage is unavailable", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw Error("Unavailable");
+    });
+    expect(readConversationOrder()).toBe("newest");
+  });
   it("loads cross-folder history, renders latest inline image, expands original and replies from that exact member", async () => {
     const state = setup();
     render(<ConversationReader {...state.props} />);
@@ -125,7 +322,11 @@ describe("conversation reader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
     await screen.findByTitle("Email content from Alex");
     expect(call.mock.calls.filter(([c]) => c.op === "detail")).toHaveLength(2);
-    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(
+      within(
+        screen.getByRole("article", { name: "Earlier message from Alex" }),
+      ).getByRole("button", { name: "Reply" }),
+    );
     expect(state.onReply).toHaveBeenLastCalledWith(
       "reply",
       expect.objectContaining({ id: "1", folderId: "2" }),
@@ -138,9 +339,9 @@ describe("conversation reader", () => {
     render(<ConversationReader {...state.props} />);
     await screen.findByTitle("Email content");
     expect(call.mock.calls.filter(([c]) => c.op === "detail")).toHaveLength(1);
-    const older = screen.getByRole("button", {
-      name: /Alex alex@example.test/,
-    });
+    const older = within(
+      screen.getByRole("article", { name: "Earlier message from Alex" }),
+    ).getByRole("button", { expanded: false });
     fireEvent.click(older);
     await screen.findByTitle("Email content");
     await waitFor(() =>

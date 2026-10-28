@@ -62,6 +62,8 @@ describe("documented mail operations", () => {
       start: "41",
       includesent: "true",
       includearchive: "true",
+      sortBy: "date",
+      sortorder: "false",
     });
     expect(q.searchParams.has("folderId")).toBe(false);
     expect(q.searchParams.has("threadedMails")).toBe(false);

@@ -115,7 +115,11 @@ export class ZohoMail {
         } else {
           if (c.folderId) q.set("folderId", remoteId(c.folderId));
           if (c.labelId) q.set("labelid", remoteId(c.labelId));
-          if (c.threadId) q.set("threadId", remoteId(c.threadId));
+          if (c.threadId) {
+            q.set("threadId", remoteId(c.threadId));
+            q.set("sortBy", "date");
+            q.set("sortorder", "false");
+          }
           // This is a FILTER for conversation mail, not a grouped-list mode.
           // Omit it for normal lists/history so standalone mail remains visible.
           q.set("includearchive", String(!c.folderId));

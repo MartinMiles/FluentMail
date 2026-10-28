@@ -4,7 +4,11 @@ A standalone Windows client for Zoho Mail, built for a familiar three-pane workf
 
 ## Run
 
-Open **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.5.0-Windows-x64.exe`**. The portable package includes its runtime; Node.js is not required on the receiving computer. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+[Download the Windows executable from GitHub Releases](https://github.com/safetyfluent/FluentMail/releases/latest). Open the downloaded file; Node.js is not required. On the development PC, the full path is **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.6.0-Windows-x64.exe`**. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+
+v1.6 makes conversation order explicit: newest first by default, an optional remembered oldest-first order, Latest/Earlier/Unread labels, sequence numbers, clear timestamps and Go to latest. Earlier-message replies remain tied to the selected message. [Research and decisions](docs/CONVERSATION-UX.md).
+
+![Fluent Mail conversation interface with fictional mail](docs/screenshots/1.6/conversation.jpg)
 
 v1.5 adds conversation chains with message-count badges and safe received inline images. It also includes two-character recipient suggestions, Send now during the countdown, Del-to-Trash, single-line rows and optional SMTP sending for inline images. History and credentials stay encrypted and separate for every mailbox. See [the image investigation and resolution](docs/INLINE-IMAGES.md).
 
@@ -61,7 +65,9 @@ These are mailbox scopes, not organization-administrator scopes. Alias addresses
 
 ## Conversations and received images
 
-The circular badge beside a sender shows the conversation message count. A + marks a lower bound from recent Inbox/Sent summaries; opening the full conversation resolves its count. Open the row to see original messages and replies in date order, including Sent mail. The newest message opens first; click an older header or **Expand all** to read earlier messages. **Load older messages** retrieves another page of long history. Reply buttons under each message reply to that specific message. Deleting or moving operates on the selected message, rather than silently changing the whole conversation.
+The circular badge beside a sender shows the conversation message count. A + marks a lower bound from recent Inbox/Sent summaries; opening the full conversation resolves its count. The newest message opens first, including cross-folder replies. **Conversation order** chooses newest first or oldest first and remembers the choice locally. The **Latest** label always identifies the newest message; **Unread** is a separate status. **Message N of M** follows chronological sequence in either order and appears only for complete, dated history.
+
+Click an older header or **Expand all** to read history. A notice identifies an earlier message as the current reply target. **Go to latest** returns to the newest card without losing the chosen order or downloading cached content again; **Collapse earlier messages** reduces the stack. A newly arriving reply updates the Latest label while preserving an earlier message you are already reading. **Load older messages** retrieves another bounded page of long history. Reply buttons under each card reply to that exact message. Delete and move remain message operations.
 
 Embedded raster images display in the body without enabling remote tracking images. Unsupported, missing or oversized embedded parts show a warning. No new authorization code or scope is needed for these features.
 

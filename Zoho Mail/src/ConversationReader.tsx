@@ -8,11 +8,20 @@ import {
   ReplyAll,
   ArrowRight,
   ShieldCheck,
+  ArrowDownUp,
+  ArrowUpRight,
 } from "lucide-react";
 import { call } from "./api";
 import type { Account, Detail, ListResult, Message } from "./shared";
-import { PAGE_SIZE } from "./shared";
-import { remoteMessageId } from "./conversations";
+import { PAGE_SIZE, addresses } from "./shared";
+import {
+  remoteMessageId,
+  newestMessages,
+  hasMessageTime,
+  readConversationOrder,
+  rememberConversationOrder,
+  type ConversationOrder,
+} from "./conversations";
 import { cleanText, safeMail } from "./sanitize";
 
 type Mode = "reply" | "all" | "forward" | "edit";
@@ -30,13 +39,29 @@ type Props = {
   onToast: (text: string) => void;
 };
 const memberKey = (m: Message) => m.folderId + ":" + remoteMessageId(m);
-const date = (stamp: number) =>
-  stamp
-    ? new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(stamp)
-    : "";
+const date = (message: Message, full = false) => {
+  if (!hasMessageTime(message)) return "Time unavailable";
+  if (full)
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(message.time);
+  const today =
+    new Date(message.time).toDateString() === new Date().toDateString();
+  return today
+    ? "Today, " +
+        new Intl.DateTimeFormat(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+        }).format(message.time)
+    : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(message.time);
+};
 
 export function ConversationReader(props: Props) {
   const { account, row, dark, busy } = props;
@@ -51,6 +76,11 @@ export function ConversationReader(props: Props) {
   const [hasMore, setHasMore] = useState(false);
   const [nextStart, setNextStart] = useState(1);
   const [failure, setFailure] = useState("");
+  const [order, setOrder] = useState<ConversationOrder>(readConversationOrder);
+  const cards = useRef(new Map<string, HTMLElement>());
+  const initialized = useRef(false);
+  const membersRef = useRef(members);
+  membersRef.current = members;
   const callbacks = useRef(props);
   callbacks.current = props;
   const generation = useRef(0);
@@ -120,14 +150,25 @@ export function ConversationReader(props: Props) {
       // Retain the selected folder's message even if a provider page omits it.
       const merge = (current: Message[]) => {
         const unique = new Map<string, Message>();
-        for (const m of [...current, ...result.messages])
+        for (const m of initial
+          ? [...result.messages, ...current]
+          : [...current, ...result.messages]) {
+          if (initial && unique.has(remoteMessageId(m))) continue;
           unique.set(remoteMessageId(m), { ...m, sourceKey: row.sourceKey });
-        return [...unique.values()].sort((a, b) => a.time - b.time);
+        }
+        return newestMessages([...unique.values()]);
       };
       setHasMore(result.hasMore);
       setNextStart(start + PAGE_SIZE);
       if (initial) {
-        const all = merge([row]);
+        const previous = membersRef.current.find(
+          (m) => memberKey(m) === activeKey.current,
+        );
+        const all = merge(
+          result.hasMore && initialized.current && previous
+            ? [row, previous]
+            : [row],
+        );
         setMembers(all);
         callbacks.current.onCount(
           result.hasMore
@@ -135,7 +176,31 @@ export function ConversationReader(props: Props) {
             : all.length,
           !result.hasMore,
         );
-        await openBody(row, version);
+        const chosen = initialized.current
+          ? all.find((m) => memberKey(m) === activeKey.current) || all[0]
+          : all[0];
+        const firstOpen = !initialized.current;
+        initialized.current = true;
+        setExpanded((current) =>
+          firstOpen
+            ? new Set([memberKey(chosen)])
+            : new Set(
+                [...current, memberKey(chosen)].filter((id) =>
+                  all.some((m) => memberKey(m) === id),
+                ),
+              ),
+        );
+        setLoading(false);
+        if (firstOpen && order === "oldest")
+          requestAnimationFrame(() =>
+            generation.current === version &&
+            activeKey.current === memberKey(chosen)
+              ? cards.current
+                  .get(memberKey(chosen))
+                  ?.scrollIntoView?.({ block: "start" })
+              : undefined,
+          );
+        await openBody(chosen, version);
       } else
         setMembers((current) => {
           const all = merge(current);
@@ -154,14 +219,17 @@ export function ConversationReader(props: Props) {
     setFailure("");
     inFlight.current = new Set();
     setPending(new Set());
-    setMembers([row]);
-    setExpanded(new Set([memberKey(row)]));
-    activeKey.current = memberKey(row);
-    setActive(memberKey(row));
-    callbacks.current.onActive(row, cache.current[memberKey(row)] || null);
+    if (!initialized.current) {
+      setMembers([row]);
+      setExpanded(new Set([memberKey(row)]));
+      activeKey.current = memberKey(row);
+      setActive(memberKey(row));
+      callbacks.current.onActive(row, cache.current[memberKey(row)] || null);
+    }
     if (row.threadId && row.threadId !== "0") void loadPage(1, version, true);
     else {
       setHasMore(false);
+      initialized.current = true;
       void openBody(row, version);
     }
     return () => {
@@ -205,22 +273,95 @@ export function ConversationReader(props: Props) {
       await openBody(m, version, false);
     }
   };
+  const descending = newestMessages(members);
+  const latest = descending[0];
+  const latestId = latest && memberKey(latest);
+  const chronology = [...descending].reverse();
+  const shown = order === "newest" ? descending : chronology;
+  const completeSequence = !hasMore && members.every(hasMessageTime);
+  const showingEarlier = active !== latestId;
+  const goLatest = () => {
+    if (!latest) return;
+    setExpanded((current) => new Set([...current, latestId]));
+    void openBody(latest, generation.current);
+    requestAnimationFrame(() =>
+      cards.current.get(latestId)?.scrollIntoView?.({ block: "start" }),
+    );
+  };
   return (
     <div className="conversation-view" aria-label="Conversation">
       {(members.length > 1 || (row.threadCount || 1) > 1 || loading) && (
         <div className="conversation-toolbar">
-          <span>
-            {loading
-              ? "Loading conversation…"
-              : `${members.length}${hasMore ? "+" : ""} messages in this conversation`}
-          </span>
-          <button
-            className="text-button"
-            onClick={() => void expandAll()}
-            disabled={loading || busy || !!failure}
-          >
-            Expand all
-          </button>
+          <div className="conversation-context">
+            <strong>
+              {loading
+                ? "Loading conversation…"
+                : `${members.length}${hasMore ? "+" : ""} messages in this conversation`}
+            </strong>
+            <span>
+              {order === "newest"
+                ? "Latest message at the top"
+                : "Latest message at the bottom"}
+            </span>
+          </div>
+          <div className="conversation-controls">
+            <label className="conversation-order">
+              <ArrowDownUp size={14} />
+              <span className="sr-only">Conversation order</span>
+              <select
+                aria-label="Conversation order"
+                value={order}
+                onChange={(event) => {
+                  const value = event.target.value as ConversationOrder;
+                  setOrder(value);
+                  rememberConversationOrder(value);
+                }}
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+            <button
+              className="latest-jump"
+              onClick={goLatest}
+              disabled={loading || !!failure}
+            >
+              <ArrowUpRight size={14} />
+              Go to latest
+            </button>
+            <button
+              className="text-button"
+              onClick={() => void expandAll()}
+              disabled={loading || busy || !!failure}
+            >
+              Expand all
+            </button>
+            {expanded.size > 1 && (
+              <button
+                className="text-button"
+                onClick={() => {
+                  setExpanded(new Set([latestId]));
+                  goLatest();
+                }}
+                disabled={loading || busy || !!failure}
+              >
+                Collapse earlier messages
+              </button>
+            )}
+          </div>
+          {!loading && members.length > 1 && (
+            <p
+              className={
+                "conversation-position" +
+                (showingEarlier ? " viewing-earlier" : "")
+              }
+              role="status"
+            >
+              {showingEarlier
+                ? "Viewing an earlier message. Reply uses that message."
+                : "Viewing the latest message."}
+            </p>
+          )}
         </div>
       )}
       {failure && (
@@ -228,30 +369,84 @@ export function ConversationReader(props: Props) {
           {failure}
         </p>
       )}
-      {members.map((m) => {
+      {shown.map((m) => {
         const id = memberKey(m),
           detail = details[id],
           isOpen = expanded.has(id);
         const safe = detail ? safeMail(detail.html, dark) : null;
+        const isLatest = id === latestId;
+        const ordinal = chronology.findIndex((p) => memberKey(p) === id) + 1;
+        const own = addresses(m.from).some((email) =>
+          account.aliases.some((alias) => alias.toLowerCase() === email),
+        );
         return (
           <article
             key={id}
+            ref={(node) => {
+              if (node) cards.current.set(id, node);
+              else cards.current.delete(id);
+            }}
+            aria-label={`${isLatest ? "Latest message" : "Earlier message"} from ${cleanText(m.sender || m.from)}`}
             className={
-              "conversation-message" + (active === id ? " active-message" : "")
+              "conversation-message" +
+              (active === id ? " active-message" : "") +
+              (isLatest ? " latest-message" : " earlier-message")
             }
           >
             <button
               className="conversation-summary"
               aria-expanded={isOpen}
+              aria-current={active === id ? "true" : undefined}
               onClick={() => toggle(m)}
             >
               {isOpen ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
-              <span className="conversation-person">
-                <strong>{cleanText(m.sender || m.from)}</strong>
-                <small>{m.from}</small>
+              <span
+                className={"conversation-avatar" + (own ? " from-you" : "")}
+                aria-hidden="true"
+              >
+                {own
+                  ? "Y"
+                  : cleanText(m.sender || m.from)
+                      .slice(0, 1)
+                      .toUpperCase()}
               </span>
-              <span className="conversation-date">{date(m.time)}</span>
-              {m.unread && <span className="unread-dot" />}
+              <span className="conversation-person">
+                <span className="conversation-identity">
+                  <strong>
+                    {own ? "You · " : ""}
+                    {cleanText(m.sender || m.from)}
+                  </strong>
+                  {!loading && members.length > 1 && (
+                    <span
+                      className={isLatest ? "latest-label" : "earlier-label"}
+                    >
+                      {isLatest ? "Latest" : "Earlier"}
+                    </span>
+                  )}
+                  {m.unread && (
+                    <span className="conversation-unread">Unread</span>
+                  )}
+                </span>
+                <small>
+                  {m.from}{" "}
+                  <span className="conversation-sequence">
+                    {completeSequence
+                      ? `Message ${ordinal} of ${members.length}`
+                      : isLatest
+                        ? "Most recent message"
+                        : "Earlier message"}
+                  </span>
+                </small>
+              </span>
+              <time
+                className="conversation-date"
+                dateTime={
+                  hasMessageTime(m) ? new Date(m.time).toISOString() : undefined
+                }
+                title={date(m, true)}
+              >
+                {date(m)}
+              </time>
             </button>
             {isOpen && (
               <div
@@ -348,6 +543,11 @@ export function ConversationReader(props: Props) {
                       </details>
                     )}
                     <div className="reply-buttons">
+                      {!isLatest && (
+                        <span className="earlier-reply-note">
+                          Reply to this earlier message
+                        </span>
+                      )}
                       {props.drafts ? (
                         <button
                           className="secondary"

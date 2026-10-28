@@ -2,6 +2,20 @@
 
 A standalone Windows client for Zoho Mail by Martin Miles / SafetyFluent. The application source is in **[Zoho Mail](Zoho%20Mail/README.md)**.
 
+**[Download the Windows application](https://github.com/safetyfluent/FluentMail/releases/latest)** · **[Setup and everyday use](Zoho%20Mail/README.md)**
+
+![Fluent Mail: conversation history, an explicit Latest message, and an inline image](Zoho%20Mail/docs/screenshots/1.6/conversation.jpg)
+
+*The actual application interface with fictional sample mail. This screenshot shows the optional oldest-first view; the default is newest first. Latest and Earlier labels stay clear in either order.*
+
+- Read multiple Zoho mailboxes and businesses in one application.
+- Follow conversation chains with explicit Latest/Earlier labels, sequence numbers and a quick return to the latest reply.
+- Compose rich text, paste images, attach files and use the five-second cancellable Send countdown.
+- Keep incoming checks and notifications active in the Windows system tray.
+- Keep account credentials, recipient history and drafts protected by Windows encryption on this PC.
+
+[See the default newest-first view](Zoho%20Mail/docs/screenshots/1.6/newest-first.jpg) and [the research behind conversation ordering](Zoho%20Mail/docs/CONVERSATION-UX.md).
+
 Before contributing, read [AGENTS.md](AGENTS.md) and [PROJECT_CONTEXT.md](Zoho%20Mail/PROJECT_CONTEXT.md). The context file records design decisions, tested behavior, investigations and unresolved limitations so work can resume without repeating the research.
 
 ## Develop on Windows

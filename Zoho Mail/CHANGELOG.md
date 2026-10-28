@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0 — 2026-10-28
+
+- Make conversation chronology explicit: newest first by default, a remembered oldest-first option, independent Latest/Earlier/Unread labels, meaningful timestamps and chronological sequence numbers when full history is available.
+- Add a sticky reading context, Go to latest and Collapse earlier messages. Reversing order retains cached bodies and the current reply target without provider requests.
+- Open the latest cross-folder reply initially and preserve an earlier message being read when new replies arrive. Request summary pages explicitly by descending date.
+- Prefer per-message provider metadata over the list row's aggregate state, so an earlier unread message does not incorrectly make the latest card unread.
+- Document comparative research across Gmail, Outlook, Zoho, Apple Mail, Thunderbird, Fastmail and Proton Mail. Add public screenshots containing only fictional mail.
+
 ## 1.5.0 ? 2026-10-28
 
 - Display received embedded raster images through authenticated, message-scoped Zoho downloads. Match MIME CIDs to provider metadata and show images inside the sandbox; remote tracking images remain blocked.
