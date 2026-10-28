@@ -15,12 +15,14 @@ import { textToHtml } from "./htmlPolicy";
 import { RichEditor } from "./RichEditor";
 import { Recipients } from "./Recipients";
 import { registerDraftFlush } from "./draftFlush";
+import { SendDelay } from "./sendDelay";
 import {
   type Account,
   type Compose,
   type LocalFile,
   type Signature,
   validateRecipients,
+  type PasteResult,
 } from "./shared";
 export function Composer({
   account,
@@ -50,16 +52,30 @@ export function Composer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const [review, setReview] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const delay = useRef(new SendDelay());
+  const preparing = useRef(false);
+  const alive = useRef(true);
+  const preparationGeneration = useRef(0);
+  const [pasting, setPasting] = useState(false);
+  const [focusRevision, setFocusRevision] = useState(0);
   const [discard, setDiscard] = useState(false);
   const [signatures, setSignatures] = useState<Signature[]>([]);
   const sending = useRef(false);
   const latest = useRef(c);
   latest.current = c;
   const ref = { profileId: account.profileId, accountId: account.id };
+  const locked = busy || countdown !== null || pasting;
+  useEffect(
+    () => () => {
+      alive.current = false;
+      preparationGeneration.current++;
+      delay.current.cancel();
+    },
+    [],
+  );
   const patch = (data: Partial<Compose>) => {
     setC((old) => ({ ...old, ...data }));
-    setReview(false);
   };
   const hasContent = (draft: Compose) =>
     !!(
@@ -68,6 +84,7 @@ export function Composer({
       draft.bcc.trim() ||
       draft.subject.trim() ||
       mailPlainText(draft.body).trim() ||
+      /<img\b/i.test(draft.body) ||
       draft.attachments.length
     );
   useEffect(() => {
@@ -86,6 +103,8 @@ export function Composer({
   useEffect(
     () =>
       registerDraftFlush(async () => {
+        preparationGeneration.current++;
+        delay.current.cancel();
         if (sending.current)
           throw new Error(
             "Wait for the current message operation before exiting.",
@@ -104,7 +123,9 @@ export function Composer({
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const close = async () => {
-    if (busy) return;
+    if (busy || pasting) return;
+    preparationGeneration.current++;
+    delay.current.cancel();
     try {
       if (hasContent(latest.current))
         await call({ op: "saveLocalDraft", ...ref, compose: latest.current });
@@ -113,30 +134,28 @@ export function Composer({
       setError((e as Error).message);
     }
   };
-  const submit = async (draft: boolean) => {
+  const submit = async (draft: boolean, message: Compose = c) => {
     if (sending.current) return;
     sending.current = true;
     setBusy(true);
     setError("");
     try {
-      validateRecipients(c, account.aliases);
+      validateRecipients(message, account.aliases);
       if (draft) {
-        await call({ op: "saveCloudDraft", ...ref, compose: c });
+        await call({ op: "saveCloudDraft", ...ref, compose: message });
         setStatus("A new copy was saved in Zoho Drafts.");
-        setReview(false);
       } else {
-        await call({ op: "send", ...ref, compose: c, confirmed: true });
+        await call({ op: "send", ...ref, compose: message, confirmed: true });
         await call({
           op: "saveLocalDraft",
           ...ref,
           compose: null,
-          draftId: c.id,
+          draftId: message.id,
         });
         onSent();
       }
     } catch (e) {
       setError((e as Error).message);
-      setReview(false);
     } finally {
       sending.current = false;
       setBusy(false);
@@ -151,14 +170,82 @@ export function Composer({
       setError((e as Error).message);
     }
   };
-  const reviewSend = () => {
+  const requestSend = async () => {
+    if (
+      sending.current ||
+      preparing.current ||
+      delay.current.pending ||
+      pasting
+    )
+      return;
+    preparing.current = true;
+    const generation = preparationGeneration.current;
     try {
       validateRecipients(c, account.aliases);
       setError("");
-      setReview(true);
       setDiscard(false);
+      const message = structuredClone(c);
+      await call({ op: "saveLocalDraft", ...ref, compose: message });
+      if (!alive.current || generation !== preparationGeneration.current)
+        return;
+      delay.current.start(() => void submit(false, message), setCountdown);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      preparing.current = false;
+    }
+  };
+  const pasteMedia = async (files: File[]): Promise<PasteResult> => {
+    if (locked) throw new Error("Cancel the pending send before pasting.");
+    setPasting(true);
+    setError("");
+    setStatus("Pasting clipboard media…");
+    try {
+      let result: PasteResult = { attachments: [], images: [] };
+      if (window.mail)
+        result = await call<PasteResult>({ op: "pasteClipboard", ...ref });
+      if (!result.attachments.length && !result.images.length && files.length) {
+        const assets = [];
+        let total = 0;
+        for (const file of files) {
+          total += file.size;
+          if (total > 20 * 1024 * 1024)
+            throw new Error("Pasted files must total less than 20 MB.");
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () =>
+              resolve(String(reader.result).split(",")[1] || "");
+            reader.onerror = () =>
+              reject(new Error("The clipboard file could not be read."));
+            reader.readAsDataURL(file);
+          });
+          assets.push({
+            name: file.name || "Pasted file",
+            mime: file.type || "application/octet-stream",
+            base64,
+            inline: file.type.startsWith("image/"),
+          });
+        }
+        result = await call<PasteResult>({ op: "importPaste", ...ref, assets });
+      }
+      if (result.attachments.length)
+        setC((old) => ({
+          ...old,
+          attachments: [...old.attachments, ...result.attachments],
+        }));
+      setStatus(
+        result.images.length
+          ? "Image inserted in the message."
+          : result.attachments.length
+            ? "Clipboard files attached."
+            : "",
+      );
+      return result;
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
+    } finally {
+      setPasting(false);
     }
   };
   return (
@@ -187,12 +274,12 @@ export function Composer({
         className="compose"
         onSubmit={(e) => {
           e.preventDefault();
-          reviewSend();
+          void requestSend();
         }}
         onKeyDown={(e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
-            if (!busy) reviewSend();
+            if (!locked) void requestSend();
           }
         }}
       >
@@ -201,7 +288,7 @@ export function Composer({
             <span>From</span>
             <select
               value={c.from}
-              disabled={busy}
+              disabled={locked}
               onChange={(e) => patch({ from: e.target.value })}
             >
               {account.aliases.map((a) => (
@@ -244,7 +331,7 @@ export function Composer({
                       ? "Cc recipients"
                       : "Bcc recipients"
                 }
-                disabled={busy}
+                disabled={locked}
                 value={c[field]}
                 onChange={(value) => patch({ [field]: value })}
               />
@@ -254,18 +341,20 @@ export function Composer({
             <span>Subject</span>
             <input
               aria-label="Subject"
-              disabled={busy}
+              disabled={locked}
               value={c.subject}
               onChange={(e) => patch({ subject: e.target.value })}
             />
           </label>
         </div>
         <RichEditor
-          disabled={busy}
+          disabled={locked}
           value={c.body}
           externalRevision={editorRevision}
           onChange={(body) => patch({ body, format: "html" })}
           onNotice={setStatus}
+          onPasteMedia={pasteMedia}
+          focusRevision={focusRevision}
         />
         <div className="compose-attachments">
           {c.attachments.map((a, i) => (
@@ -275,7 +364,7 @@ export function Composer({
               <button
                 type="button"
                 aria-label={"Remove " + a.name}
-                disabled={busy}
+                disabled={locked}
                 onClick={() =>
                   patch({
                     attachments: c.attachments.filter(
@@ -304,7 +393,7 @@ export function Composer({
             <button
               type="button"
               className="secondary danger"
-              disabled={busy}
+              disabled={locked}
               onClick={() => {
                 sending.current = true;
                 setBusy(true);
@@ -333,79 +422,41 @@ export function Composer({
             </button>
           </div>
         )}
-        {review && (
-          <div className="send-review">
-            {!c.subject.trim() && (
-              <p className="compose-reminder">This message has no subject.</p>
-            )}
-            {!c.attachments.length &&
-              /\b(attach(?:ed|ment)?|enclosed)\b/i.test(
-                mailPlainText(c.body.split("<blockquote")[0]),
-              ) && (
-                <p className="compose-reminder">
-                  You mentioned an attachment, but no file is attached.
-                </p>
-              )}
-            <strong>
-              {demo ? "Simulate sending" : "Send this message"}
-              {c.schedule !== "now" ? " later" : ""}?
-            </strong>
-            <p>
-              From {c.from}
-              <br />
-              To {c.to}
-              {c.cc && (
-                <>
-                  <br />
-                  Cc {c.cc}
-                </>
-              )}
-              {c.bcc && (
-                <>
-                  <br />
-                  Bcc {c.bcc}
-                </>
-              )}
-            </p>
-            <p>
-              {c.subject || "(No subject)"} · {c.attachments.length}{" "}
-              attachment(s)
-              {c.schedule !== "now"
-                ? " · in " +
-                  { "1": "1 hour", "2": "2 hours", "3": "4 hours" }[c.schedule]
-                : ""}
-            </p>
+        {countdown !== null && (
+          <div className="send-countdown" role="status">
+            <div>
+              <strong>
+                {c.schedule === "now" ? "Sending" : "Scheduling"} in {countdown}{" "}
+                second{countdown === 1 ? "" : "s"}…
+              </strong>
+              <span>
+                {c.to} · {c.attachments.length} attachment(s)
+              </span>
+            </div>
             <button
               type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() => void submit(false)}
+              className="secondary"
+              onClick={() => {
+                delay.current.cancel();
+                setFocusRevision((r) => r + 1);
+              }}
             >
-              {busy
-                ? "Submitting…"
-                : demo
-                  ? "Confirm demo send"
-                  : "Confirm send"}
+              Cancel send
             </button>
-            <button
-              className="text-button"
-              type="button"
-              disabled={busy}
-              onClick={() => setReview(false)}
-            >
-              Keep editing
-            </button>
+            <div className="countdown-track">
+              <span style={{ width: (countdown / 5) * 100 + "%" }} />
+            </div>
           </div>
         )}
         <footer className="compose-footer">
           <div className="compose-buttons">
-            <button className="primary" disabled={busy || review}>
-              <Send size={16} /> Review & send
+            <button className="primary" disabled={locked}>
+              <Send size={16} /> Send
             </button>
             <select
               aria-label="Send time"
               value={c.schedule}
-              disabled={busy}
+              disabled={locked}
               onChange={(e) =>
                 patch({ schedule: e.target.value as Compose["schedule"] })
               }
@@ -420,7 +471,7 @@ export function Composer({
               className="icon-button"
               title={demo ? "Attach sample file" : "Attach files"}
               aria-label="Attach files"
-              disabled={busy}
+              disabled={locked}
               onClick={() => void attach()}
             >
               <Paperclip size={18} />
@@ -430,7 +481,7 @@ export function Composer({
               className="icon-button"
               title="Save a new copy to Zoho Drafts"
               aria-label="Save copy to Zoho Drafts"
-              disabled={busy}
+              disabled={locked}
               onClick={() => void submit(true)}
             >
               <Save size={18} />
@@ -440,7 +491,7 @@ export function Composer({
             <button
               type="button"
               className="text-button"
-              disabled={busy}
+              disabled={locked}
               onClick={() =>
                 void call<Signature[]>({ op: "signatures", ...ref })
                   .then(setSignatures)
@@ -477,7 +528,7 @@ export function Composer({
         <div className="compose-status">
           {busy
             ? "Working…"
-            : status || "Rich-text message · Ctrl+Enter to review"}
+            : status || "Rich-text message · Ctrl+Enter to send"}
           <span>
             {c.attachments.length
               ? `${(c.attachments.reduce((n, a) => n + a.size, 0) / 1024 / 1024).toFixed(1)} MB of 20 MB · `
@@ -487,10 +538,10 @@ export function Composer({
           <button
             type="button"
             className="discard-link"
-            disabled={busy}
+            disabled={locked}
             onClick={() => {
               setDiscard(true);
-              setReview(false);
+              delay.current.cancel();
             }}
           >
             Discard

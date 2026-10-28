@@ -30,7 +30,14 @@ export const MAIL_TAGS = [
   "th",
   "hr",
   "a",
+  "img",
 ];
+export function validEditorImage(value: string) {
+  return (
+    value.length <= 28_000_000 &&
+    /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
+  );
+}
 export const MAIL_STYLES: Record<string, RegExp[]> = {
   color: [/^(#[\da-f]{3,8}|rgba?\([\d., %]+\)|[a-z]+)$/i],
   "background-color": [/^(#[\da-f]{3,8}|rgba?\([\d., %]+\)|[a-z]+)$/i],

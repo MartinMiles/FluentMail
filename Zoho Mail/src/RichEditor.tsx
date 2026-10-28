@@ -4,6 +4,9 @@ import StarterKit from "@tiptap/starter-kit";
 import { TextStyleKit } from "@tiptap/extension-text-style";
 import TextAlign from "@tiptap/extension-text-align";
 import Placeholder from "@tiptap/extension-placeholder";
+import Image from "@tiptap/extension-image";
+import type { PasteResult } from "./shared";
+import { textToHtml } from "./htmlPolicy";
 import {
   Bold,
   Italic,
@@ -32,12 +35,16 @@ export function RichEditor({
   disabled,
   onNotice,
   externalRevision = 0,
+  onPasteMedia,
+  focusRevision = 0,
 }: {
   value: string;
   onChange: (html: string) => void;
   disabled: boolean;
   onNotice: (message: string) => void;
   externalRevision?: number;
+  onPasteMedia?: (files: File[]) => Promise<PasteResult>;
+  focusRevision?: number;
 }) {
   const [link, setLink] = useState<{
     from: number;
@@ -59,6 +66,7 @@ export function RichEditor({
       TextStyleKit,
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Placeholder.configure({ placeholder: "Write your message…" }),
+      Image.configure({ inline: true, allowBase64: true }),
     ],
     content: cleanEditorHtml(value),
     editable: !disabled,
@@ -71,15 +79,49 @@ export function RichEditor({
         class: "rich-document",
       },
       transformPastedHTML: cleanEditorHtml,
-      handlePaste: (_view, event) => {
-        if (event.clipboardData?.files.length) {
-          onNotice(
-            "Use Attach files for images and documents. Text and formatting can be pasted here.",
+      handlePaste: (view, event) => {
+        const files = Array.from(event.clipboardData?.files || []);
+        if (!onPasteMedia || (!window.mail && !files.length)) return false;
+        const selection = {
+          from: view.state.selection.from,
+          to: view.state.selection.to,
+        };
+        const html = event.clipboardData?.getData("text/html") || "",
+          text = event.clipboardData?.getData("text/plain") || "";
+        event.preventDefault();
+        void onPasteMedia(files)
+          .then((result) => {
+            if (editor?.isDestroyed) return;
+            if (result.images.length)
+              editor
+                ?.chain()
+                .focus()
+                .insertContentAt(
+                  selection,
+                  result.images.map((image) => ({
+                    type: "image",
+                    attrs: { src: image.src, alt: image.name },
+                  })),
+                )
+                .run();
+            else if (!result.attachments.length && (html || text))
+              editor
+                ?.chain()
+                .focus()
+                .insertContentAt(
+                  selection,
+                  html ? cleanEditorHtml(html) : textToHtml(text),
+                )
+                .run();
+          })
+          .catch((e) =>
+            onNotice(
+              e instanceof Error
+                ? e.message
+                : "Clipboard media could not be pasted.",
+            ),
           );
-          event.preventDefault();
-          return true;
-        }
-        return false;
+        return true;
       },
       handleDrop: (_view, event) => {
         if (event.dataTransfer?.files.length) {
@@ -113,6 +155,9 @@ export function RichEditor({
   useEffect(() => {
     editor?.setEditable(!disabled);
   }, [editor, disabled]);
+  useEffect(() => {
+    if (focusRevision > 0) editor?.commands.focus();
+  }, [focusRevision, editor]);
   // The editor owns keystrokes/selection. Reset content only for an explicit external insert,
   // never by reflecting each asynchronous React state update back into ProseMirror.
   useEffect(() => {

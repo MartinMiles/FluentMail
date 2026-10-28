@@ -71,6 +71,64 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
 });
 describe("application boundary and persistence", () => {
+  it("uploads local inline images with isInline and rewrites their sources before sending", async () => {
+    const s = setup();
+    const ref = await connect(s);
+    s.fetcher.mockImplementation(async (url, init) =>
+      url.includes("/attachments?")
+        ? ok({
+            storeName: "fixture-store",
+            attachmentPath: "/compose/image.png",
+            attachmentName: "image.png",
+            url: "/zm/ImageSignature?fileName=image.png&accountId=100&storeName=fixture-store",
+          })
+        : ok({ messageId: "400" }),
+    );
+    const src =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII=";
+    const compose = {
+      ...blankCompose("alex@example.test"),
+      format: "html",
+      to: "jamie@example.test",
+      body: `<p>Screenshot<img src="${src}"></p>`,
+    };
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose,
+      confirmed: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(s.fetcher.mock.calls[2][0]).toContain("isInline=true");
+    const sent = JSON.parse(s.fetcher.mock.calls[3][1].body as string);
+    expect(sent.content).toContain("/zm/ImageSignature?");
+    expect(sent.content).not.toContain("base64");
+    expect(sent.attachments[0].storeName).toBe("fixture-store");
+  });
+  it("imports copied file bytes behind an opaque attachment handle", async () => {
+    const s = setup();
+    const ref = await connect(s);
+    const r = await s.service.invoke({
+      op: "importPaste",
+      ...ref,
+      assets: [
+        {
+          name: "report.pdf",
+          mime: "application/pdf",
+          base64: Buffer.from("fixture").toString("base64"),
+          inline: false,
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const a = (r.value as any).attachments[0];
+      expect(a.name).toBe("report.pdf");
+      expect(a.id).not.toContain("report");
+      expect(a.path).toBeUndefined();
+    }
+    expect(s.fetcher).toHaveBeenCalledTimes(2);
+  });
   it("loads a v1.0 vault with safe preferences without reconnecting", () => {
     const s = setup();
     expect(s.vault.data.preferences).toBeUndefined();

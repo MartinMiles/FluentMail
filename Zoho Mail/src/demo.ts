@@ -15,6 +15,7 @@ import {
   type AppEvent,
   type ListResult,
 } from "./shared";
+import { validEditorImage } from "./htmlPolicy";
 
 export class DemoMail {
   preferences: Preferences = { ...DEFAULT_PREFERENCES };
@@ -250,6 +251,25 @@ export class DemoMail {
     }
   }
   async execute(c: Command): Promise<unknown> {
+    if (c.op === "pasteClipboard") return { attachments: [], images: [] };
+    if (c.op === "importPaste") {
+      const attachments = [],
+        images = [];
+      for (const a of c.assets) {
+        const src = `data:${a.mime};base64,${a.base64}`;
+        if (a.inline) {
+          if (!validEditorImage(src))
+            throw new Error("Paste a PNG, JPEG, GIF or WebP image.");
+          images.push({ src, name: a.name });
+        } else
+          attachments.push({
+            id: crypto.randomUUID(),
+            name: a.name,
+            size: atob(a.base64).length,
+          });
+      }
+      return { attachments, images };
+    }
     if (c.op === "preferences") {
       this.preferences = c.preferences;
       return this.execute({ op: "snapshot" });

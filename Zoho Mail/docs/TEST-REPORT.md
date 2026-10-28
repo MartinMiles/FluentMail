@@ -1,41 +1,34 @@
-# Fluent Mail 1.1.0 — validation report
-
-Date: 2026-10-28 (America/Los_Angeles). All assistant-run application tests used synthetic mail, injected responses, or isolated `--demo` launches. The owner's saved credential vault was not opened for testing. No live OAuth request, token renewal, private mail read, send, DNS change or account mutation was performed by the assistant.
-
-Separately, the owner reported that v1.0 connected successfully and delivered a message with an attachment to an external mailbox. That supports the original connection/send path for the tested account; it does not establish production behavior for every new v1.1 feature. The original report is preserved in [TEST-REPORT-1.0.md](TEST-REPORT-1.0.md).
+# Fluent Mail 1.2.0 validation — 2026-10-28
 
 ## Results
 
-| Check                                   | Result                                                                                                   |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| TypeScript                              | Passed                                                                                                   |
-| Automated suite                         | **88 tests passed in 8 files**                                                                           |
-| Production build                        | Passed                                                                                                   |
-| Full dependency audit                   | **0 vulnerabilities reported**                                                                           |
-| Isolated development Electron smoke     | Passed                                                                                                   |
-| Unpacked Windows executable smoke       | Passed                                                                                                   |
-| Final portable Windows executable smoke | **Passed**                                                                                               |
-| Shared renderer visual review           | Passed for rich editor, account selector, notification/check settings, automatic arrival merge and About |
+- **101 automated tests passed in 10 files.**
+- TypeScript and production build passed.
+- Full dependency audit: **0 vulnerabilities** reported.
+- Unpacked and final portable Windows executables passed isolated `--demo --smoke-test` launches.
+- No owner clipboard content, credential vault, live OAuth account, or private mailbox was used in these tests.
 
-Final executable:
+Executable:
 
 ```text
-C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.1.0-Windows-x64.exe
+C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.2.0-Windows-x64.exe
 ```
 
-Size: **113,530,401 bytes** (about 108.3 MiB). Windows x64, unsigned, portable. SHA-256:
+Size: 113,540,442 bytes (about 108.3 MiB), unsigned Windows x64 portable package.
+
+SHA-256:
 
 ```text
-0D7948EC4A8A92B4A5DCD2F700928CC5EC2EF21E9CE3DE3700F434AE0CAC602E
+A0DFCDE809F82A54F3FA94F8DAA7E8005BA3AA446210A6F2353EE0D9CA9C6BC7
 ```
 
-Both packaged smoke launches returned:
+Final portable smoke returned:
 
 ```json
 {
   "ok": true,
   "demo": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "loaded": true,
   "protectedRoundtrip": true,
   "hiddenToTray": true,
@@ -48,46 +41,30 @@ Both packaged smoke launches returned:
 }
 ```
 
-The smoke closes the actual Electron window, verifies that it remains alive/hidden with a tray icon, then requests explicit Exit and waits for the renderer's draft-save acknowledgment before quitting. Windows encryption uses a synthetic string. No real account transport is constructed in demo mode.
+## Send flow
 
-## New coverage
+Pure timer tests establish no submission before 5000ms, exactly one submission after expiry, cancellation at 4999ms, and invalidation of an older timer. Full React workflows use the real five-second delay, verify no second confirmation step, and test successful sends and send failures through the mock backend. UI Cancel returns to an editable message with its contents preserved and no send call. Existing pending-send, failed-authentication, source-mailbox and draft-flush tests remain green.
 
-- **Connection feedback:** successful connection closes Settings and selects the mailbox; failure keeps a focused error visible and is not retried.
-- **Polling:** quiet baseline, new unread arrivals, duplicate suppression, old/read-message suppression, multiple profiles, collision isolation, one sweep at a time, bounded catch-up, configured intervals, paused checks/manual check, stop/disconnect cancellation, fresh baseline after reconnect, and failure latching.
-- **OAuth:** a healthy expiring session renews once across concurrent requests; failed renewal stops without retrying either authentication or mail requests. Startup remains disconnected.
-- **Live-view events:** new arrivals merge into the unified Inbox while the current message and open composer remain intact. Reply and action source identity remain isolated.
-- **Rich editing:** exact typed characters, bold HTML serialization, safe links, paste sanitation, old plaintext conversion, outgoing HTML format and main-process sanitizer. Existing reply/draft/threading/attachment contracts remain covered.
-- **Exit:** an active rich draft is flushed before the Exit acknowledgment. Other local drafts are preserved.
-- **Compatibility:** old v1.0 vaults without preferences load with defaults and do not reconnect.
-- **About:** running package version, Martin Miles, SafetyFluent and martin@safetyfluent.com are displayed.
+The composer also cancels pending timers on close/unmount/Exit, and guards against late local-save completion arming a timer after closure. During countdown only local draft saving occurs; file uploads and Zoho submission start afterward.
 
-The v1.0 contracts/security tests also continue to cover large IDs, request construction, recipient validation, unauthorized From values, attachment isolation, pending-send protection, encrypted storage, sandboxed email HTML, stale body responses, folders/labels, search and Trash/restore.
+## Clipboard and inline media
 
-## Important failures and fixes
+- Synthetic Unicode CF_HDROP file-list decoding, malformed data rejection, local-path restrictions and thumbnail/file precedence.
+- Clipboard text is not read when enumerating media. Tests inject mock ClipboardItem/Blob values; they never query the owner's clipboard.
+- UI paste inserts a fixture PNG image into the rich body, waits for paste completion, then attaches a fixture PDF file. Neither operation sends email.
+- Opaque attachment-handle import prevents renderer-selected filesystem paths.
+- PNG/JPEG/GIF/WebP signatures, remote-image rejection, size limits and deduplication.
+- Exact API contract: `isInline=true`, returned URL restricted to the current region/account, corresponding HTML source replacement, and preservation of upload descriptors. No guessed CID.
+- Outbound sanitization removes scripts, event handlers and unrelated remote images while keeping only the registered inline source.
 
-1. Reflecting each editor update back through a controlled React value reset selection and dropped characters. Tiptap now owns keystrokes/selection; only deliberate external content changes reset the document. Regression tests assert exact text and formatted serialization.
-2. Old tests expected plaintext textarea values and manual token expiration. They were updated to assert recipient chips/rich content and the newly requested healthy token-renewal behavior; rejection/no-retry tests remain in force.
-3. Unexpected sync failures could otherwise repeat even if an adapter had not updated connection status. The sync engine now latches failed profiles and the service persists the pause. Explicit reconnection is required.
-4. In-flight sync results could arrive after stop/disconnect/reconnect. Epoch invalidation now drops them and prevents subsequent mailbox reads in that sweep.
-5. Closing a tray-resident app while a debounce was pending could lose the final edit. Explicit Exit now uses a draft-flush handshake, with a visible stay/exit choice if the renderer cannot acknowledge saving.
+During test adaptation, user-event with React fake timers stalled at click completion; the integration tests now use the real grace period while pure timer tests retain exact virtual-clock assertions. Tiptap inserts source-less separator img elements in its editing DOM; the paste assertion correctly targets `img[src]`. These separators are not serialized email images.
 
-## Visual evidence
+## Limits
 
-Only fictional `example.test` mail appears in the previews. About contains the creator information explicitly supplied by the owner.
+External recipient rendering of Zoho's inline-upload URL has **not** been live-verified. The implementation follows the documented inline flag and returned URL contract; it does not claim a successful production send or particular external-client rendering result. Owner-reported v1.0 attachment delivery does not establish inline-image delivery.
 
-- [Rich composer](screenshots/1.1/rich-compose.jpg)
-- [Incoming mail while the original message stays open](screenshots/1.1/incoming.jpg)
-- [Automatic check and notification settings](screenshots/1.1/settings.jpg)
-- [About/version/creator](screenshots/1.1/about.jpg)
+Regular clipboard files are session attachment handles and need reattachment after restarting. Inline images persist locally in encrypted HTML drafts. Older executables should not edit these new image drafts, because their editors strip image content. The reader still blocks remote images.
 
-A browser automation keystroke sequence timed out partway through input; the tool reported an input-dispatch timeout. The incomplete fixture text was inspected and replaced explicitly. This was distinct from the editor integration bug above. Exact-character typing passes automated editor tests, and rich formatting/list behavior was also inspected through the browser UI.
+Native clipboard formats and media were validated with fixtures, not live clipboard inspection. Windows notification support is detected, but OS toast visibility remains subject to Windows settings. The existing local renderer chunk-size advisory and synchronous safeStorage deprecation remain documented in PROJECT_CONTEXT.md.
 
-## Limits of validation
-
-- New live polling, healthy production token renewal, rich HTML delivery and native notifications for actual mail were not tested against owner accounts.
-- `Notification.isSupported()` passed; it does not prove that Windows will display every toast. Do Not Disturb, notification permissions and platform policy can suppress them. Native test-notification and tray-balloon fallback paths are available for owner verification.
-- Polling is not instant push. Default interval is 15 seconds after a completed sweep, plus request pacing/provider latency. Very large catch-up batches are bounded at 200 messages per sweep and marked as limited.
-- The package is unsigned. It has not been exercised on other machines or Windows versions.
-- The local renderer bundle is approximately 830 KB and triggers Vite's 500 KB advisory. It loads from the packaged filesystem; no hosted editor or network code-loading was introduced. Electron's existing synchronous safeStorage deprecation notice remains tracked in PROJECT_CONTEXT.md.
-
-Future assistant-led live tests require the owner's named-account/client approval and bounded scope. Disable automatic checks for a connection-only test. Background tests need an explicit duration/check count and stop conditions. A successful offline smoke is not production authentication evidence.
+Historical reports: [v1.1](TEST-REPORT-1.1.md), [v1.0](TEST-REPORT-1.0.md). Any future assistant-led live check still requires a named account/client, bounded scope and owner availability under the standing safeguards.

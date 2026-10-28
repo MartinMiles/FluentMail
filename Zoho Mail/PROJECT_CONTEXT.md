@@ -2,7 +2,26 @@
 
 **Read this file first every time this project is resumed.** Required by the owner on 2026-10-27 and enforced by both workspace and project AGENTS.md files. Keep this file in ordinary source control. Update it with material decisions, evidence, blockers, resolutions and reasons. Never put secrets, private messages, tokens, cookies, phone numbers or unrelated account information here.
 
-## Current release: 1.1.0 — owner steering on 2026-10-28
+## Current release: 1.2.0 — owner steering on 2026-10-28
+
+**Superseded for send/paste by v1.2 below.** Other v1.1 architecture and safeguards remain applicable.
+
+### v1.2 continuation — Send and clipboard media
+
+The owner requested a single Send click with a five-second countdown and Cancel returning to editing, plus Gmail-style clipboard image insertion and copied-file attachments. The work was interrupted by a selected-model capacity message and resumed at the owner's repeated instruction. No live account tests or inspection of the owner's current clipboard were authorized/performed.
+
+- `src/sendDelay.ts` owns a cancellable local timer. Composer snapshots/saves the draft, locks editing, and starts five seconds. Cancel restores editing. No uploads/POST occur before expiry. Unmount, composer close and explicit Exit cancel the timer; a generation guard prevents a late local-save response from arming a timer after the composer closes. The duplicate-send ledger is unchanged.
+- `desktop/clipboard.ts` reads native clipboard types only on an explicit paste action. It parses Unicode CF_HDROP/FileNameW from Windows Explorer, prioritizes copied files over thumbnails, rejects network paths/directories, and does not read plain-text clipboard contents for media detection. Unit tests use synthetic formats/blobs, never the live clipboard.
+- Browser paste File objects import bounded bytes via IPC; no renderer-supplied file path is trusted. Regular copied files get mailbox-scoped opaque handles. They are session attachments and require reattachment after restart. Text/HTML paste falls back to sanitized content when no media is present.
+- Tiptap Image allows only local PNG/JPEG/GIF/WebP base64 sources. Remote and SVG image sources are rejected. Inline images live in the HTML of the encrypted draft, so they survive a restart; compose payload maximum is 30 million characters and combined raw media limit remains 20 MB.
+- `desktop/inlineImages.ts` validates raster magic bytes and deduplicates local image sources. At send/cloud-save, images upload with documented `isInline=true`. The returned `/zm/ImageSignature` URL must match the selected Zoho region/account. Outbound HTML replaces only the matching local image with that returned URL; normal attachment descriptors are retained. This is derived from the documented upload contract, not a guessed CID/private endpoint. **External recipient rendering has not been live-verified.** Sources: [Zoho upload](https://www.zoho.com/mail/help/api/post-upload-attachments.html), [send with attachments](https://www.zoho.com/mail/help/api/post-send-email-attachment.html), [Electron clipboard](https://www.electronjs.org/docs/latest/api/clipboard).
+- Old UI tests expecting the confirmation dialog were updated. Exact grace-period behavior uses fake timers in pure timer tests; React send workflows use the real five-second delay because user-event/fake-timer interaction stalled the test harness. Paste assertions target `img[src]`, not ProseMirror's source-less separator images, and wait for the paste operation to finish before a second paste.
+
+Latest delivery path for this release: `C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.2.0-Windows-x64.exe`. Exit the running older version from its tray before opening the new one. Do not reopen v1.2 inline-image drafts in older editors that strip images. Current validation is in docs/TEST-REPORT.md; prior v1.1 validation is archived in docs/TEST-REPORT-1.1.md.
+
+v1.2 automated validation: **101 tests passing in 10 files**, clean TypeScript/build, zero dependency audit findings. The unpacked isolated --demo smoke passed for version 1.2.0, encryption, renderer isolation/events, tray residency and Exit handshake. Final portable evidence/hash is recorded in the current test report. No actual clipboard contents were read during development; no live Zoho requests were made. Prior executables and the real encrypted vault were preserved.
+
+Capacity clarification (separate from this app): official OpenAI docs distinguish temporary model overload from quota/rate-limit errors. The selected-model UI message was not accompanied by diagnostic status, so overload is an inference. Usage allowance can be checked at https://chatgpt.com/codex/settings/usage or `/status` in Codex CLI; these do not give the assistant a live provider-utilization counter. See [error codes](https://developers.openai.com/api/docs/guides/error-codes#api-errors) and [usage limits](https://learn.chatgpt.com/docs/pricing#where-can-i-see-my-current-usage-limits). No account/billing changes were made.
 
 The owner **personally reports** that v1.0 successfully connected a Zoho mailbox and sent an attachment to an external mailbox. The exact tested mailbox/recipient was not specified. This is owner-reported evidence, not an assistant-run/observed live test; do not extrapolate it to every API, account or the new background/HTML features.
 

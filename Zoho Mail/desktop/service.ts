@@ -10,6 +10,7 @@ import {
   type Folder,
   type ListResult,
   type Result,
+  type PasteResult,
   validateRecipients,
 } from "../src/shared";
 import {
@@ -21,10 +22,13 @@ import {
 } from "./transport";
 import { ZohoMail } from "./zoho";
 import { Vault } from "./vault";
+import { imageDataUrl, inlineImages, MAX_MEDIA } from "./inlineImages";
+import { type ClipboardMedia } from "./clipboard";
 export interface Dialogs {
   pick(): Promise<string[]>;
   save(name: string): Promise<string | null>;
   open(url: string): Promise<boolean>;
+  clipboard?(): Promise<ClipboardMedia>;
 }
 export class MailService {
   private clients = new Map<string, ZohoMail>();
@@ -33,7 +37,8 @@ export class MailService {
     {
       profileId: string;
       accountId: string;
-      path: string;
+      path?: string;
+      bytes?: Uint8Array;
       name: string;
       size: number;
     }
@@ -236,6 +241,65 @@ export class MailService {
     }
     if (!client) throw new Error("Connect this account first.");
     client.account(c.accountId);
+    if (c.op === "pasteClipboard" || c.op === "importPaste") {
+      const result: PasteResult = { attachments: [], images: [] };
+      if (c.op === "pasteClipboard") {
+        if (!this.dialogs.clipboard) return result;
+        const media = await this.dialogs.clipboard();
+        let total = media.images.reduce(
+          (n, image) => n + image.bytes.length,
+          0,
+        );
+        if (total > MAX_MEDIA)
+          throw new Error("Pasted media must total less than 20 MB.");
+        for (const filePath of media.paths) {
+          const stat = await fs.stat(filePath);
+          total += stat.size;
+          if (!stat.isFile() || total > MAX_MEDIA)
+            throw new Error("Paste local files totaling less than 20 MB.");
+          const id = randomUUID(),
+            name = path.basename(filePath);
+          this.files.set(id, {
+            profileId: c.profileId,
+            accountId: c.accountId,
+            path: filePath,
+            name,
+            size: stat.size,
+          });
+          result.attachments.push({ id, name, size: stat.size });
+        }
+        for (const image of media.images)
+          result.images.push({
+            src: imageDataUrl(image.bytes, image.mime),
+            name: image.name,
+          });
+      } else {
+        let total = 0;
+        for (const asset of c.assets) {
+          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(asset.base64))
+            throw new Error("Clipboard file data is incomplete.");
+          const bytes = new Uint8Array(Buffer.from(asset.base64, "base64"));
+          total += bytes.length;
+          if (total > MAX_MEDIA)
+            throw new Error("Pasted media must total less than 20 MB.");
+          const name = path.basename(asset.name.replaceAll("\\", "/"));
+          if (asset.inline)
+            result.images.push({ src: imageDataUrl(bytes, asset.mime), name });
+          else {
+            const id = randomUUID();
+            this.files.set(id, {
+              profileId: c.profileId,
+              accountId: c.accountId,
+              bytes,
+              name,
+              size: bytes.length,
+            });
+            result.attachments.push({ id, name, size: bytes.length });
+          }
+        }
+      }
+      return result;
+    }
     if (c.op === "pickFiles") {
       const paths = await this.dialogs.pick();
       const result: LocalFile[] = [];
@@ -276,30 +340,41 @@ export class MailService {
           "This draft was already submitted or its send outcome is uncertain. Check Sent in Zoho before creating another copy.",
         );
       validateRecipients(c.compose, client.account(c.accountId).aliases);
+      const embedded =
+        c.compose.format === "html" ? inlineImages(c.compose.body) : new Map();
       if (
-        c.compose.attachments.reduce((n, a) => n + a.size, 0) >
+        c.compose.attachments.reduce((n, a) => n + a.size, 0) +
+          [...embedded.values()].reduce((n, a) => n + a.bytes.length, 0) >
         20 * 1024 * 1024
       )
         throw new Error("Attachments must total less than 20 MB.");
       this.busy.add(key);
       try {
         const attachments = [];
+        const inlineSources = new Map<string, string>();
         for (const a of c.compose.attachments) {
           const f = this.files.get(a.id);
           if (!f || f.profileId !== c.profileId || f.accountId !== c.accountId)
             throw new Error("Please reattach files after restarting the app.");
-          const stat = await fs.stat(f.path);
-          if (stat.size !== f.size || stat.size > 20 * 1024 * 1024)
+          const bytes = f.bytes || new Uint8Array(await fs.readFile(f.path!));
+          if (bytes.length !== f.size || bytes.length > 20 * 1024 * 1024)
             throw new Error(
               "An attachment changed. Remove it and attach the current file.",
             );
-          attachments.push(
-            await client.upload(
-              c.accountId,
-              f.name,
-              new Uint8Array(await fs.readFile(f.path)),
-            ),
+          attachments.push(await client.upload(c.accountId, f.name, bytes));
+        }
+        for (const [src, image] of embedded) {
+          const uploaded = await client.upload(
+            c.accountId,
+            image.name,
+            image.bytes,
+            true,
           );
+          if (!("url" in uploaded) || !uploaded.url)
+            throw new Error("The inline image upload was not confirmed.");
+          const { url, ...attachment } = uploaded;
+          inlineSources.set(src, url);
+          attachments.push(attachment);
         }
         if (c.op === "send") {
           this.vault.data.submitted[key] = "pending";
@@ -310,6 +385,7 @@ export class MailService {
           c.compose,
           attachments,
           c.op === "saveCloudDraft",
+          inlineSources,
         );
         if (c.op === "send") {
           this.vault.data.submitted[key] = "sent";

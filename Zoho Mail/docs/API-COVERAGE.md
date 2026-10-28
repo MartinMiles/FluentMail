@@ -1,5 +1,9 @@
 # API coverage and implementation boundaries
 
+## v1.2 update
+
+Local clipboard images now upload through the same documented RAW attachment endpoint with `isInline=true`; the returned `url` is validated for region/account and substituted into the matching HTML img source. No CID or new API scope is invented. Regular clipboard files use the normal attachment path. Live external inline-image rendering remains unverified. The five-second Send delay is entirely local and starts no upload/API send until it expires.
+
 ## v1.1 update — 2026-10-28
 
 The same mailbox scopes and documented endpoints now support automatic Inbox polling and WYSIWYG HTML composition. New mail is detected from paced `messages/view` requests; no webhook relay or private endpoint was added. Healthy connected sessions use the documented refresh-token grant once before expiry; failures still pause without retries. Send/reply/cloud-draft payloads use `mailFormat: html` with main-process sanitization; v1.0 plaintext payloads remain valid.

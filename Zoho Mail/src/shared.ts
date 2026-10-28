@@ -92,6 +92,10 @@ export type Detail = {
 };
 export type Signature = { id: string; name: string; content: string };
 export type LocalFile = { id: string; name: string; size: number };
+export type PasteResult = {
+  attachments: LocalFile[];
+  images: { src: string; name: string }[];
+};
 export type Snapshot = {
   demo: boolean;
   profiles: Profile[];
@@ -137,7 +141,7 @@ export const composeSchema = z.object({
   cc: text,
   bcc: text,
   subject: z.string().max(998),
-  body: z.string().max(2_000_000),
+  body: z.string().max(30_000_000),
   format: z.enum(["plaintext", "html"]).optional(),
   attachments: z
     .array(z.object({ id, name: text, size: z.number().nonnegative() }))
@@ -235,6 +239,22 @@ export const commandSchema = z.discriminatedUnion("op", [
     color: z.string().regex(/^#[0-9a-f]{6}$/i),
   }),
   z.object({ op: z.literal("pickFiles"), ...ref }),
+  z.object({ op: z.literal("pasteClipboard"), ...ref }),
+  z.object({
+    op: z.literal("importPaste"),
+    ...ref,
+    assets: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(255),
+          mime: z.string().max(100),
+          base64: z.string().max(28_000_000),
+          inline: z.boolean(),
+        }),
+      )
+      .min(1)
+      .max(20),
+  }),
   z.object({
     op: z.literal("saveAttachment"),
     ...ref,

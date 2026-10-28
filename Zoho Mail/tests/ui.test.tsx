@@ -50,7 +50,23 @@ beforeEach(() => {
     return r.value;
   });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+async function sendAfterGrace() {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(screen.getByRole("button", { name: "Cancel send" })).toBeTruthy();
+  expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(0);
+  await waitFor(
+    () =>
+      expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
+        1,
+      ),
+    { timeout: 7000 },
+  );
+}
 async function inbox() {
   render(<App />);
   await screen.findByRole("button", {
@@ -59,6 +75,76 @@ async function inbox() {
   return userEvent.setup();
 }
 describe("offline inbox workflows", () => {
+  it("Cancel send returns to editing and never submits the cancelled message", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    await user.type(
+      screen.getByLabelText("To recipients"),
+      "jamie@example.test",
+    );
+    await user.type(
+      screen.getByLabelText("Message body"),
+      "Keep editing this message",
+    );
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("button", { name: "Cancel send" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel send" }));
+    expect(screen.queryByRole("button", { name: "Cancel send" })).toBeNull();
+    expect(
+      screen.getByLabelText("Message body").getAttribute("contenteditable"),
+    ).toBe("true");
+    expect(screen.getByLabelText("Message body").textContent).toBe(
+      "Keep editing this message",
+    );
+    expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+  });
+  it("pastes an image into the body and a clipboard file into attachments", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: /Compose/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Compose from alex@example.test" }),
+    );
+    const bytes = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6kXAAAAAASUVORK5CYII=",
+      ),
+      (c) => c.charCodeAt(0),
+    );
+    const paste = (file: File) => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: { files: [file], types: ["Files"], getData: () => "" },
+      });
+      fireEvent(screen.getByLabelText("Message body"), event);
+    };
+    paste(new File([bytes], "image.png", { type: "image/png" }));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByLabelText("Message body")
+          .querySelector("img[src]")
+          ?.getAttribute("src"),
+      ).toMatch(/^data:image\/png;base64,/),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Message body").getAttribute("contenteditable"),
+      ).toBe("true"),
+    );
+    paste(
+      new File(["fixture pdf bytes"], "report.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    await screen.findByText("report.pdf");
+    expect(
+      mockCall.mock.calls.filter(([c]) => c.op === "importPaste"),
+    ).toHaveLength(2);
+    expect(mockCall.mock.calls.some(([c]) => c.op === "send")).toBe(false);
+  });
   it("shows the creator and package version in About", async () => {
     const user = await inbox();
     await user.click(screen.getByRole("button", { name: "About Fluent Mail" }));
@@ -247,7 +333,7 @@ describe("offline inbox workflows", () => {
     ).toBeNull();
     expect(screen.queryByTitle("Email content")).toBeNull();
   });
-  it("requires a separate send review, sends once, and appears in Sent", async () => {
+  it("one Send click waits five seconds, sends once, and appears in Sent", async () => {
     const user = await inbox();
     await user.click(screen.getByRole("button", { name: /Compose/ }));
     await user.click(
@@ -268,15 +354,7 @@ describe("offline inbox workflows", () => {
       within(dialog).getByLabelText("Message body"),
       "A complete fixture message.",
     );
-    await user.click(
-      within(dialog).getByRole("button", { name: "Review & send" }),
-    );
-    expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
-      0,
-    );
-    await user.click(
-      within(dialog).getByRole("button", { name: "Confirm demo send" }),
-    );
+    await sendAfterGrace();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(mockCall.mock.calls.filter(([c]) => c.op === "send")).toHaveLength(
       1,
@@ -305,8 +383,7 @@ describe("offline inbox workflows", () => {
       screen.getByLabelText("Message body"),
       "Do not lose this draft",
     );
-    await user.click(screen.getByRole("button", { name: "Review & send" }));
-    await user.click(screen.getByRole("button", { name: "Confirm demo send" }));
+    await sendAfterGrace();
     await screen.findByRole("alert");
     expect(screen.getByLabelText("Message body").textContent).toBe(
       "Do not lose this draft",
@@ -408,8 +485,7 @@ describe("offline inbox workflows", () => {
     expect((screen.getByLabelText("From") as HTMLSelectElement).value).toBe(
       "alex@studio.example.test",
     );
-    await user.click(screen.getByRole("button", { name: "Review & send" }));
-    await user.click(screen.getByRole("button", { name: "Confirm demo send" }));
+    await sendAfterGrace();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const sent = mockCall.mock.calls.find(([c]) => c.op === "send")![0];
     expect(sent).toMatchObject({

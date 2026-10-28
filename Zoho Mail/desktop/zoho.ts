@@ -5,6 +5,7 @@ import {
   type Compose,
   type Folder,
   PAGE_SIZE,
+  REGIONS,
   validateRecipients,
 } from "../src/shared";
 import { ZohoTransport, remoteId, normalizeMessage } from "./transport";
@@ -213,30 +214,57 @@ export class ZohoMail {
         throw new Error("Unsupported mail operation.");
     }
   }
-  async upload(accountId: string, name: string, bytes: Uint8Array) {
+  async upload(
+    accountId: string,
+    name: string,
+    bytes: Uint8Array,
+    isInline = false,
+  ) {
     this.account(accountId);
     const data = await this.transport.request(
       "/api/accounts/" +
         remoteId(accountId) +
         "/messages/attachments?" +
-        new URLSearchParams({ fileName: name, isInline: "false" }),
+        new URLSearchParams({ fileName: name, isInline: String(isInline) }),
       "POST",
       bytes,
     );
     const a = Array.isArray(data) ? data[0] : data;
     if (!a?.storeName || !a?.attachmentPath || !a?.attachmentName)
       throw new Error("Zoho did not confirm the attachment upload.");
-    return {
+    const attachment = {
       storeName: String(a.storeName),
       attachmentPath: String(a.attachmentPath),
       attachmentName: String(a.attachmentName),
     };
+    if (isInline) {
+      const raw = String(a.url || "");
+      const base = REGIONS[this.transport.secret.region].mail;
+      let url: URL;
+      try {
+        url = new URL(raw, base);
+      } catch {
+        throw new Error("Zoho did not return an inline image URL.");
+      }
+      if (
+        !raw ||
+        url.origin !== base ||
+        url.pathname !== "/zm/ImageSignature" ||
+        url.username ||
+        url.password ||
+        url.searchParams.get("accountId") !== accountId
+      )
+        throw new Error("Zoho returned an unexpected inline image URL.");
+      return { ...attachment, url: raw };
+    }
+    return attachment;
   }
   async send(
     accountId: string,
     c: Compose,
     attachments: unknown[],
     draft = false,
+    inlineSources: ReadonlyMap<string, string> = new Map(),
   ) {
     const a = this.account(accountId);
     validateRecipients(c, a.aliases);
@@ -246,7 +274,10 @@ export class ZohoMail {
       ccAddress: c.cc.replaceAll(";", ","),
       bccAddress: c.bcc.replaceAll(";", ","),
       subject: c.subject,
-      content: c.format === "html" ? sanitizeOutgoingHtml(c.body) : c.body,
+      content:
+        c.format === "html"
+          ? sanitizeOutgoingHtml(c.body, inlineSources)
+          : c.body,
       mailFormat: c.format || "plaintext",
       encoding: "UTF-8",
       askReceipt: "no",

@@ -1,7 +1,7 @@
 {
   "name": "safetyfluent-mail",
   "productName": "Fluent Mail",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "A focused Windows mail client for the Zoho Mail API",
   "author": {
@@ -23,6 +23,7 @@
     "format": "prettier --write src desktop tests scripts/*.mjs *.json *.ts docs/*.md README.md PLAN.md AGENTS.md"
   },
   "dependencies": {
+    "@tiptap/extension-image": "^3.32.0",
     "@tiptap/extension-placeholder": "^3.32.0",
     "@tiptap/extension-text-align": "^3.32.0",
     "@tiptap/extension-text-style": "^3.32.0",

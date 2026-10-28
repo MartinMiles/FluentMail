@@ -12,6 +12,7 @@ import {
   Notification,
   powerMonitor,
   nativeImage,
+  clipboard,
 } from "electron";
 import path from "node:path";
 import os from "node:os";
@@ -21,6 +22,7 @@ import { Vault } from "./vault";
 import { MailService } from "./service";
 import { DemoMail } from "../src/demo";
 import { InboxSync } from "./sync";
+import { readClipboardMedia } from "./clipboard";
 import { APP_INFO } from "../src/version";
 import {
   commandSchema,
@@ -324,7 +326,8 @@ else {
         callback({
           cancel:
             !details.url.startsWith("fluent://app/") &&
-            !details.url.startsWith("devtools:"),
+            !details.url.startsWith("devtools:") &&
+            !/^data:image\/(png|jpeg|gif|webp);base64,/.test(details.url),
         }),
       );
       win = new BrowserWindow({
@@ -431,6 +434,7 @@ else {
                   });
                   return r.canceled ? [] : r.filePaths;
                 },
+                clipboard: () => readClipboardMedia(clipboard),
                 save: async (name) => {
                   const r = await dialog.showSaveDialog(win, {
                     defaultPath: name,

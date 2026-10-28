@@ -4,7 +4,7 @@ A standalone Windows client for Zoho Mail, built for a familiar three-pane workf
 
 ## Run
 
-Open **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.1.0-Windows-x64.exe`**. The portable package includes its runtime; Node.js is not required on the receiving computer. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+Open **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.2.0-Windows-x64.exe`**. The portable package includes its runtime; Node.js is not required on the receiving computer. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
 
 Exit the old version before opening the new executable. Existing Windows-encrypted accounts and drafts are retained. The original v1.0 portable executable is kept as a separate file. Open **About Fluent Mail** to confirm the running version and creator information: Martin Miles, SafetyFluent, martin@safetyfluent.com.
 
@@ -52,8 +52,10 @@ These are mailbox scopes, not organization-administrator scopes. Alias addresses
 - Search accepts Zoho search syntax, for example `subject:proposal` or `from:someone@example.com`. Press Enter to search; typing does not issue requests.
 - Opening a message reads its content; use the toolbar to explicitly mark it read/unread.
 - Archive, flags, spam/not-spam, labels and moves operate on the selected messages. Trash is a move, not permanent deletion. Permanent delete/empty-folder commands are intentionally absent.
-- Compose now uses a WYSIWYG HTML editor with formatting, fonts/sizes, colors, lists, alignment, quotes, safe links, emoji and undo/redo. Use To recipient chips and the Cc/Bcc controls, authorized From addresses, reply/reply-all, forwarding, file attachments, formatted signatures and Zoho's 1/2/4-hour delayed-send presets. Ctrl+Enter opens send review; the maximize control provides more editing space. Older plain-text drafts are converted safely when opened.
-- **Review & send** shows the sender, recipients, subject, timing and attachment count before the final send. A successful response means Zoho accepted the operation, not that every recipient received it.
+- Compose now uses a WYSIWYG HTML editor with formatting, fonts/sizes, colors, lists, alignment, quotes, safe links, emoji and undo/redo. Use To recipient chips and the Cc/Bcc controls, authorized From addresses, reply/reply-all, forwarding, file attachments, formatted signatures and Zoho's 1/2/4-hour delayed-send presets. Ctrl+Enter starts the same five-second send countdown; the maximize control provides more editing space. Older plain-text drafts are converted safely when opened.
+- **Send** immediately starts a visible five-second countdown. **Cancel send** stops it and returns to editing. No uploads or send request begin during that window; at expiry the app starts uploading and submitting the message. There is no second confirmation button. Closing the composer or explicitly exiting during the countdown cancels the pending submission and preserves the draft. A successful API response means Zoho accepted the operation, not that every recipient received it.
+- **Paste images/files:** Ctrl+V in the editor inserts clipboard raster images directly into the body. Files copied in Windows Explorer become attachments. Text and formatted text still paste normally. Clipboard data is read only for the paste action; no clipboard history or monitoring is used. PNG/JPEG/GIF/WebP images are supported; SVG is not embedded. Network file paths must be copied locally first. Inline images are stored in the encrypted local draft; ordinary clipboard-file handles must be reattached after restarting, like other session attachment handles.
+- Inline sending uses Zoho's documented `isInline=true` upload and its returned image URL. Recipient-side inline rendering is not yet live-verified. Remote images remain blocked in the reader. Use v1.2 for new inline-image drafts; older executables do not preserve this new image-editing support.
 - Local drafts are encrypted and stored separately per authorization/mailbox/draft. Compose lets you resume saved drafts or start another. Closing a composer preserves it; Discard removes only that local draft.
 - **Save copy to Zoho Drafts** creates a new cloud draft. It does not silently overwrite an existing server draft. Opening a cloud draft uses **Edit as new message**; the original stays in Zoho.
 - Attachments stay local until send/cloud-save. The client caps uploads at 20 MB total and downloads at 30 MB. Files must be reattached after restarting. Forwarding and editing-as-new do not automatically copy the original attachments; download and reattach the ones you want.
@@ -62,17 +64,17 @@ These are mailbox scopes, not organization-administrator scopes. Alias addresses
 
 ## Keyboard shortcuts
 
-| Shortcut                 | Action                             |
-| ------------------------ | ---------------------------------- |
-| Ctrl+N                   | Choose a sending mailbox / compose |
-| Ctrl+K                   | Focus search                       |
-| Ctrl+K in the editor     | Insert/edit a link                 |
-| Ctrl+Enter in compose    | Review the message before sending  |
-| Ctrl+B / Ctrl+I / Ctrl+U | Bold / italic / underline          |
-| Up / Down                | Browse the message list            |
-| R                        | Reply                              |
-| F5                       | Refresh the current view           |
-| Escape                   | Clear selection or close a dialog  |
+| Shortcut                 | Action                                |
+| ------------------------ | ------------------------------------- |
+| Ctrl+N                   | Choose a sending mailbox / compose    |
+| Ctrl+K                   | Focus search                          |
+| Ctrl+K in the editor     | Insert/edit a link                    |
+| Ctrl+Enter in compose    | Send with a five-second cancel window |
+| Ctrl+B / Ctrl+I / Ctrl+U | Bold / italic / underline             |
+| Up / Down                | Browse the message list               |
+| R                        | Reply                                 |
+| F5                       | Refresh the current view              |
+| Escape                   | Clear selection or close a dialog     |
 
 ## Data and account safety
 

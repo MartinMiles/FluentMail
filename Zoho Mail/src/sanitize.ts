@@ -1,5 +1,10 @@
 import DOMPurify from "dompurify";
-import { MAIL_TAGS, safeStyles, validMailLink } from "./htmlPolicy";
+import {
+  MAIL_TAGS,
+  safeStyles,
+  validMailLink,
+  validEditorImage,
+} from "./htmlPolicy";
 DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
   if (data.attrName === "style") {
     data.attrValue = safeStyles(data.attrValue);
@@ -7,11 +12,24 @@ DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
   }
   if (data.attrName === "href" && !validMailLink(data.attrValue))
     data.keepAttr = false;
+  if (data.attrName === "src" && !validEditorImage(data.attrValue))
+    data.keepAttr = false;
 });
 export function cleanEditorHtml(html: string) {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: MAIL_TAGS,
-    ALLOWED_ATTR: ["href", "style", "colspan", "rowspan", "start"],
+    ALLOWED_ATTR: [
+      "href",
+      "style",
+      "colspan",
+      "rowspan",
+      "start",
+      "src",
+      "alt",
+      "title",
+      "width",
+      "height",
+    ],
     ALLOW_DATA_ATTR: false,
   });
 }

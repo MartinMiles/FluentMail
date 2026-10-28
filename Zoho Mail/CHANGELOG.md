@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 — 2026-10-28
+
+- Replace the second send-confirmation step with one Send click and a five-second cancellation countdown. Cancel returns to editing; close/Exit also cancels pending submission and keeps the draft. Uploads start only after the grace period.
+- Paste screenshots/raster images into the WYSIWYG body and copied Windows Explorer files as attachments. Preserve normal text/HTML paste, enforce local paths/size limits, and avoid reading clipboard text when looking for media.
+- Keep pasted inline images local in the encrypted draft. Validate raster signatures, upload with Zoho's documented inline flag, and use the returned account/region-validated image URL in outgoing HTML. No guessed CID scheme. External inline rendering remains unverified.
+- Keep prior executable versions and the existing encrypted account store. Add cancellation/timing, clipboard format/import, HTML source rewriting and complete UI tests.
+
 ## 1.1.0 — 2026-10-28
 
 - Successful connection closes Settings, selects the new mailbox, and shows confirmation. Failed connections keep a focused validation message visible; no automatic retry.
