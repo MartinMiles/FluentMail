@@ -1,0 +1,11 @@
+node_modules/
+dist/
+desktop-dist/
+release/
+coverage/
+*.log
+.env*
+*.vault*
+settings.local.*
+recipient-history*.json
+test-results/

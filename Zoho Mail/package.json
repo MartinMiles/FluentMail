@@ -1,0 +1,81 @@
+{
+  "name": "safetyfluent-mail",
+  "productName": "Fluent Mail",
+  "version": "1.3.0",
+  "private": true,
+  "description": "A focused Windows mail client for the Zoho Mail API",
+  "author": {
+    "name": "Martin Miles",
+    "email": "martin@safetyfluent.com"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "desktop-dist/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "vite build && node scripts/build-desktop.mjs",
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "package": "npm run build && electron-builder --win portable --x64",
+    "smoke": "electron . --demo --smoke-test",
+    "format": "prettier --write src desktop tests scripts/*.mjs *.json *.ts docs/*.md README.md PLAN.md AGENTS.md"
+  },
+  "dependencies": {
+    "@tiptap/extension-image": "^3.32.0",
+    "@tiptap/extension-placeholder": "^3.32.0",
+    "@tiptap/extension-text-align": "^3.32.0",
+    "@tiptap/extension-text-style": "^3.32.0",
+    "@tiptap/pm": "^3.32.0",
+    "@tiptap/react": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0",
+    "dompurify": "^3.3.0",
+    "json-bigint": "^1.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sanitize-html": "^2.18.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/json-bigint": "^1.0.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/sanitize-html": "^2.16.2",
+    "@vitejs/plugin-react": "latest",
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^26.1.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.0",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  },
+  "build": {
+    "copyright": "Copyright © 2026 Martin Miles · SafetyFluent",
+    "appId": "com.safetyfluent.mail",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop-dist/**/*",
+      "package.json",
+      "resources/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": "portable",
+      "signExecutable": false,
+      "icon": "resources/app.ico"
+    },
+    "portable": {
+      "artifactName": "Fluent-Mail-${version}-Windows-x64.exe"
+    }
+  }
+}
