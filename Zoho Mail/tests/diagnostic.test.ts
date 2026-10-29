@@ -45,11 +45,13 @@ describe("bounded read-only account diagnostic", () => {
               ? response([
                   {
                     messageId: "30",
+                    folderId: "20",
                     subject: "Approved fixture",
                     sentDateInGMT: 10,
                   },
                   {
                     messageId: "31",
+                    folderId: "20",
                     subject: "Private unrelated fixture",
                     sentDateInGMT: 20,
                   },

@@ -406,6 +406,8 @@ export class DemoMail {
       return m;
     };
     switch (c.op) {
+      case "releaseFiles":
+        return true;
       case "folders":
         return this.folders;
       case "labels":

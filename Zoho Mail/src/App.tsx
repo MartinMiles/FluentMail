@@ -59,12 +59,16 @@ import { escapeHtml } from "./htmlPolicy";
 import { APP_INFO } from "./version";
 import { About } from "./About";
 import { flushActiveDraft } from "./draftFlush";
-import { mergeInboxUpdate } from "./inboxUpdates";
+import { mergeInboxUpdate, scopeMessage } from "./inboxUpdates";
 import { Settings } from "./Settings";
 import { Composer } from "./Composer";
 import { Modal } from "./Modal";
 import { ConversationReader } from "./ConversationReader";
-import { conversationKey, groupConversations } from "./conversations";
+import {
+  conversationKey,
+  groupConversations,
+  hasMessageTime,
+} from "./conversations";
 
 const initialSnapshot: Snapshot = { demo: false, profiles: [], accounts: [] };
 const accountKey = (a: Account) => a.profileId + ":" + a.id;
@@ -77,14 +81,14 @@ const initials = (name: string) =>
     .join("")
     .toUpperCase();
 const time = (stamp: number) =>
-  stamp
+  hasMessageTime({ time: stamp })
     ? new Intl.DateTimeFormat(undefined, {
         month: "short",
         day: "numeric",
         hour: "numeric",
         minute: "2-digit",
       }).format(stamp)
-    : "";
+    : "Time unavailable";
 const shortTime = (stamp: number) =>
   new Date(stamp).toDateString() === new Date().toDateString()
     ? new Intl.DateTimeFormat(undefined, {
@@ -164,7 +168,7 @@ export default function App() {
   const [countRefresh, setCountRefresh] = useState(0);
   const messages = useMemo(
     () =>
-      groupConversations(rawMessages).map((m) => ({
+      groupConversations(loadedFor === key ? rawMessages : []).map((m) => ({
         ...m,
         threadCount: Math.max(
           m.threadCount || 1,
@@ -172,7 +176,7 @@ export default function App() {
         ),
         threadCountEstimated: threadCounts[key + ":" + m.id]?.exact === false,
       })),
-    [rawMessages, threadCounts, key],
+    [rawMessages, threadCounts, key, loadedFor],
   );
   const [start, setStart] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -190,7 +194,7 @@ export default function App() {
   const [settings, setSettings] = useState(false);
   const [smtpAccountKey, setSmtpAccountKey] = useState<string | undefined>();
   const [about, setAbout] = useState(false);
-  const [lastChecked, setLastChecked] = useState(0);
+  const [checkTimes, setCheckTimes] = useState<Record<string, number>>({});
   const eventHandler = useRef<(event: AppEvent) => Promise<void>>(
     async () => {},
   );
@@ -233,6 +237,13 @@ export default function App() {
     ? snapshot.profiles.find((p) => p.id === account.profileId)
     : undefined;
   const connected = !!profile?.connected;
+  const lastChecked = account
+    ? unified
+      ? Math.min(
+          ...availableAccounts.map((a) => checkTimes[accountKey(a)] || 0),
+        )
+      : checkTimes[accountKey(account)] || 0
+    : 0;
   const selectedRow = messages.find((m) => m.id === selected);
   const message =
     selectedRow && activeMessage && activeFor === key + ":" + selected
@@ -241,12 +252,19 @@ export default function App() {
   const folder = folders.find((f) => f.id === view);
   const label = labels.find((l) => "label:" + l.id === view);
   const sourceAccount = (m: Message) =>
-    snapshot.accounts.find((a) => accountKey(a) === m.sourceKey) || account!;
+    snapshot.accounts.find((a) => accountKey(a) === m.sourceKey);
   const messageAccount = message ? sourceAccount(message) : account;
   const messageRef = messageAccount
     ? { profileId: messageAccount.profileId, accountId: messageAccount.id }
     : null;
   const messageId = (m: Message) => m.remoteId || m.id;
+  const currentDetail =
+    message && activeFor === key + ":" + selected ? detail : null;
+  const messageConnected =
+    !!messageAccount &&
+    snapshot.profiles.some(
+      (p) => p.id === messageAccount.profileId && p.connected,
+    );
   const title = unified
     ? query
       ? "Search all mailboxes"
@@ -307,12 +325,19 @@ export default function App() {
       setQueryInput("");
       setFilter("all");
       setStart(1);
+      if (key === accountKey(event.account)) {
+        const inbox = folders.find((f) => f.path.toLowerCase() === "/inbox");
+        if (inbox) setView(inbox.id);
+      }
       setRefresh((r) => r + 1);
       return;
     }
     if (event.type === "inbox") {
       const u = event.update;
-      setLastChecked(u.checkedAt);
+      setCheckTimes((current) => ({
+        ...current,
+        [accountKey(u.account)]: u.checkedAt,
+      }));
       if (u.catchUpLimited)
         setToast(
           "A large batch of mail arrived. Open the mailbox to review older arrivals.",
@@ -461,12 +486,7 @@ export default function App() {
               ...(query ? { query } : { folderId: inbox.id }),
             });
             combined.push(
-              ...r.messages.map((m) => ({
-                ...m,
-                id: accountKey(a) + ":" + m.id,
-                remoteId: m.id,
-                sourceKey: accountKey(a),
-              })),
+              ...r.messages.map((m) => scopeMessage(m, accountKey(a))),
             );
           }
           if (generation === listGeneration.current) {
@@ -502,16 +522,17 @@ export default function App() {
     void call<ListResult>(cmd)
       .then((r) => {
         if (generation === listGeneration.current) {
+          const scoped = r.messages.map((m) => scopeMessage(m, key));
           const pending = pendingOpen.current;
           if (pending && accountKey(pending.account) === key) {
             setMessages(
-              r.messages.some((m) => m.id === pending.message.id)
-                ? r.messages
-                : [pending.message, ...r.messages],
+              scoped.some((m) => messageId(m) === messageId(pending.message))
+                ? scoped
+                : [scopeMessage(pending.message, key), ...scoped],
             );
-            setSelected(conversationKey(pending.message));
+            setSelected(conversationKey(scopeMessage(pending.message, key)));
             pendingOpen.current = null;
-          } else setMessages(r.messages);
+          } else setMessages(scoped);
           setHasMore(r.hasMore);
         }
       })
@@ -573,7 +594,7 @@ export default function App() {
                 remoteId: m.id,
                 sourceKey: accountKey(source),
               }))
-            : page.messages;
+            : page.messages.map((m) => scopeMessage(m, accountKey(source)));
           const counts = Object.fromEntries(
             groupConversations(summaries).map((m) => [
               key + ":" + m.id,
@@ -656,9 +677,15 @@ export default function App() {
         .filter((m): m is Message => !!m);
       if (!selectedMessages.length) return;
       const source = sourceAccount(selectedMessages[0]);
+      if (!source)
+        throw Error(
+          "The source mailbox is unavailable. Select a connected mailbox.",
+        );
       if (
         selectedMessages.some(
-          (m) => accountKey(sourceAccount(m)) !== accountKey(source),
+          (m) =>
+            sourceAccount(m)?.profileId !== source.profileId ||
+            sourceAccount(m)?.id !== source.id,
         )
       )
         throw new Error("Select messages from one mailbox at a time.");
@@ -681,6 +708,7 @@ export default function App() {
         target: dest,
       });
       setToast(action === "move" ? "Messages moved." : "Updated.");
+      setChecked([]);
       setRefresh((r) => r + 1);
     });
   };
@@ -704,11 +732,20 @@ export default function App() {
   const reply = (
     mode: "reply" | "all" | "forward" | "edit",
     targetMessage = message,
-    targetDetail = detail,
+    targetDetail = currentDetail,
   ) => {
     const message = targetMessage;
     const detail = targetDetail;
-    if (!messageAccount || !message || !detail) return;
+    const messageAccount = message ? sourceAccount(message) : undefined;
+    if (
+      !messageAccount ||
+      !message ||
+      !detail ||
+      !snapshot.profiles.some(
+        (p) => p.id === messageAccount.profileId && p.connected,
+      )
+    )
+      return;
     const c = blankCompose(messageAccount.email);
     const own = messageAccount.aliases.map((a) => a.toLowerCase());
     c.subject =
@@ -833,6 +870,7 @@ export default function App() {
         return;
       }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (busy || loading) return;
         e.preventDefault();
         const index = messages.findIndex((m) => m.id === selected);
         setSelected(
@@ -847,7 +885,7 @@ export default function App() {
           ]?.id || "",
         );
       }
-      if (e.key === "r" && detail) reply("reply");
+      if (e.key === "r" && currentDetail && !busy && !loading) reply("reply");
       if (e.key === "F5") {
         e.preventDefault();
         if (!loading) setRefresh((r) => r + 1);
@@ -877,18 +915,20 @@ export default function App() {
           className="search"
           onSubmit={(e) => {
             e.preventDefault();
+            if (busy || compose || !connected) return;
             setQuery(queryInput.trim());
+            setFilter("all");
             setStart(1);
           }}
         >
           <Search size={19} />
           <input
             ref={searchRef}
+            disabled={busy || !!compose || !connected}
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
             aria-label="Search mail"
             placeholder="Search mail · subject:proposal, from:name"
-            disabled={!connected || busy}
           />
           {queryInput ? (
             <button
@@ -958,7 +998,10 @@ export default function App() {
                 className="connect-sidebar"
                 onClick={() => setSettings(true)}
               >
-                <Plus size={17} /> Connect an account
+                <Plus size={17} />{" "}
+                {snapshot.profiles.length
+                  ? "Saved accounts"
+                  : "Connect an account"}
               </button>
             )}
           </div>
@@ -1003,6 +1046,7 @@ export default function App() {
                   <button
                     className="nav-item"
                     key={accountKey(a)}
+                    disabled={busy || !!compose}
                     onClick={() => setKey(accountKey(a))}
                   >
                     <Mail size={17} />
@@ -1432,7 +1476,7 @@ export default function App() {
                           aria-label={"Open " + cleanText(m.subject)}
                           aria-pressed={selected === m.id}
                           title={
-                            sourceAccount(m).email +
+                            (sourceAccount(m)?.email || "Mailbox unavailable") +
                             " · " +
                             cleanText(m.sender) +
                             " · " +
@@ -1506,28 +1550,33 @@ export default function App() {
                       <div className="reader-actions">
                         <Tool
                           title="Reply"
-                          disabled={!detail || busy}
+                          disabled={!currentDetail || busy || !messageConnected}
                           onClick={() => reply("reply")}
                         >
                           <Reply size={18} />
                         </Tool>
                         <Tool
                           title="Reply all"
-                          disabled={!detail || busy}
+                          disabled={!currentDetail || busy || !messageConnected}
                           onClick={() => reply("all")}
                         >
                           <ReplyAll size={18} />
                         </Tool>
                         <Tool
                           title="Forward"
-                          disabled={!detail || busy}
+                          disabled={!currentDetail || busy || !messageConnected}
                           onClick={() => reply("forward")}
                         >
                           <ArrowRight size={18} />
                         </Tool>
                         <Tool
                           title="View headers"
-                          disabled={busy || bodyLoading}
+                          disabled={
+                            busy ||
+                            bodyLoading ||
+                            !messageConnected ||
+                            !currentDetail
+                          }
                           onClick={() =>
                             void run(async () =>
                               setHeaders(
@@ -1738,6 +1787,7 @@ export default function App() {
             {[
               ["Ctrl + N", "Compose or resume draft"],
               ["Ctrl + K", "Search mail"],
+              ["Ctrl + Shift + Q", "Exit Fluent Mail and save the draft"],
               ["↑ / ↓", "Select a message"],
               ["R", "Reply to selected message"],
               ["Del", "Move selected messages to Trash"],

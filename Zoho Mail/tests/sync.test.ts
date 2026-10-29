@@ -67,6 +67,39 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe("automatic mail checking", () => {
+  it("does not let a rejected old poll pause a reconnected profile", async () => {
+    const f = fixture();
+    let reject!: (e: Error) => void;
+    f.poll.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const old = f.sync.checkNow();
+    f.sync.resetProfile("p1");
+    reject(Error("Old stopped request"));
+    await old;
+    expect(f.onError).not.toHaveBeenCalled();
+    await f.sync.checkNow();
+    expect(f.poll).toHaveBeenCalledTimes(2);
+    expect(f.updates).toHaveLength(1);
+  });
+  it("ignores a failure that arrives after automatic checking was stopped", async () => {
+    const f = fixture();
+    let reject!: (e: Error) => void;
+    f.poll.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const old = f.sync.checkNow();
+    f.sync.stop();
+    reject(Error("Cancelled old check"));
+    await old;
+    expect(f.onError).not.toHaveBeenCalled();
+  });
   it("latches unexpected adapter failures even if the source has not updated its state", async () => {
     const f = fixture();
     f.poll.mockRejectedValue(new Error("Malformed fixture response"));

@@ -63,13 +63,18 @@ export class Vault implements SecretStore {
       fields,
     );
   }
-  persist() {
+  commit(change: Partial<Data>) {
+    const next = { ...this.data, ...change };
+    this.persist(next);
+    this.data = next;
+  }
+  persist(data = this.data) {
     if (!this.cipher.isEncryptionAvailable())
       throw new Error(
         "Windows credential protection is unavailable. Nothing was stored in plaintext.",
       );
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const bytes = this.cipher.encryptString(JSON.stringify(this.data));
+    const bytes = this.cipher.encryptString(JSON.stringify(data));
     const temp = this.file + ".tmp";
     fs.writeFileSync(temp, bytes, { mode: 0o600 });
     fs.renameSync(temp, this.file);
@@ -81,13 +86,16 @@ export class Vault implements SecretStore {
     this.persist();
   }
   forget(id: string) {
-    this.data.profiles = this.data.profiles.filter((p) => p.id !== id);
-    for (const key of Object.keys(this.data.drafts))
-      if (key.startsWith(id + ":")) delete this.data.drafts[key];
-    for (const key of Object.keys(this.data.recipientHistory || {}))
-      if (key.startsWith(id + ":")) delete this.data.recipientHistory![key];
-    for (const key of Object.keys(this.data.smtp || {}))
-      if (key.startsWith(id + ":")) delete this.data.smtp![key];
-    this.persist();
+    const keep = <T>(values: Record<string, T>) =>
+      Object.fromEntries(
+        Object.entries(values).filter(([key]) => !key.startsWith(id + ":")),
+      );
+    this.commit({
+      profiles: this.data.profiles.filter((p) => p.id !== id),
+      drafts: keep(this.data.drafts),
+      submitted: keep(this.data.submitted),
+      recipientHistory: keep(this.data.recipientHistory || {}),
+      smtp: keep(this.data.smtp || {}),
+    });
   }
 }

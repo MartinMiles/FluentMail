@@ -100,6 +100,7 @@ export function Settings({
     <Modal
       title="Settings & accounts"
       wide
+      closeDisabled={busy}
       onClose={() => {
         if (!busy) onClose();
       }}

@@ -392,7 +392,26 @@ export function RichEditor({
         </select>
       </div>
       {link && (
-        <div className="link-editor">
+        <div
+          className="link-editor"
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setLink(null);
+              editor.commands.focus();
+            }
+            if (
+              event.key === "Enter" &&
+              event.target instanceof HTMLInputElement
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              applyLink();
+            }
+          }}
+        >
           <label>
             Link address
             <input
@@ -400,16 +419,6 @@ export function RichEditor({
               value={link.url}
               placeholder="https://example.com"
               onChange={(e) => setLink({ ...link, url: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  applyLink();
-                }
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  setLink(null);
-                }
-              }}
             />
           </label>
           {link.from === link.to && (

@@ -20,10 +20,15 @@ import {
   ZohoTransport,
   type Secret,
   type Fetcher,
+  UnsentRequestError,
 } from "./transport";
 import { ZohoMail } from "./zoho";
 import { Vault } from "./vault";
 import { imageDataUrl, inlineImages, MAX_MEDIA } from "./inlineImages";
+import {
+  validateAttachmentBudget,
+  inlineImageStats,
+} from "../src/attachmentLimits";
 import { type ClipboardMedia } from "./clipboard";
 import {
   SmtpMailer,
@@ -38,19 +43,19 @@ export interface Dialogs {
   open(url: string): Promise<boolean>;
   clipboard?(): Promise<ClipboardMedia>;
 }
+type AttachmentHandle = {
+  profileId: string;
+  accountId: string;
+  path?: string;
+  bytes?: Uint8Array;
+  name: string;
+  size: number;
+  mtimeMs?: number;
+  ctimeMs?: number;
+};
 export class MailService {
   private clients = new Map<string, ZohoMail>();
-  private files = new Map<
-    string,
-    {
-      profileId: string;
-      accountId: string;
-      path?: string;
-      bytes?: Uint8Array;
-      name: string;
-      size: number;
-    }
-  >();
+  private files = new Map<string, AttachmentHandle>();
   private busy = new Set<string>();
   private folderCache = new Map<string, Folder[]>();
   private historyLoads = new Map<string, Promise<string[]>>();
@@ -88,6 +93,31 @@ export class MailService {
   }
   isBusy() {
     return this.busy.size > 0;
+  }
+  private profileBusy(id: string) {
+    return [...this.busy].some(
+      (key) =>
+        key === id ||
+        key.startsWith(id + ":") ||
+        key.startsWith("smtp:" + id + ":"),
+    );
+  }
+  private releaseFiles(profileId: string, accountId: string, ids: string[]) {
+    const key = profileId + ":" + accountId;
+    const retained = new Set(
+      Object.entries(this.vault.data.drafts)
+        .filter(([k]) => k === key || k.startsWith(key + ":"))
+        .flatMap(([, d]) => d.attachments.map((a) => a.id)),
+    );
+    for (const id of ids) {
+      const file = this.files.get(id);
+      if (
+        file?.profileId === profileId &&
+        file.accountId === accountId &&
+        !retained.has(id)
+      )
+        this.files.delete(id);
+    }
   }
   connectedAccounts() {
     return [...this.clients.values()]
@@ -165,8 +195,7 @@ export class MailService {
   private async execute(c: Command): Promise<unknown> {
     if (c.op === "snapshot") return this.snapshot();
     if (c.op === "preferences") {
-      this.vault.data.preferences = c.preferences;
-      this.vault.persist();
+      this.vault.commit({ preferences: c.preferences });
       return this.snapshot();
     }
     if (c.op === "demo")
@@ -183,9 +212,14 @@ export class MailService {
     }
     if (c.op === "connect" || c.op === "resume") {
       const key = c.op === "connect" ? c.email.toLowerCase() : c.profileId;
+      if (c.op === "resume" && this.profileBusy(c.profileId))
+        throw Error(
+          "Wait for the current message or connection operation before reconnecting this account.",
+        );
       if (this.busy.has(key))
         throw new Error("A connection attempt is already running.");
       this.busy.add(key);
+      let connectionProfile: string | undefined;
       try {
         let secret: Secret | undefined;
         if (c.op === "connect") {
@@ -211,6 +245,8 @@ export class MailService {
         } else
           secret = this.vault.data.profiles.find((p) => p.id === c.profileId);
         if (!secret) throw new Error("Account not found.");
+        connectionProfile = secret.id;
+        this.busy.add(connectionProfile);
         this.clients.get(secret.id)?.transport.disconnect();
         const client = new ZohoMail(
           new ZohoTransport(secret, this.vault, this.pacer, this.fetcher),
@@ -227,24 +263,21 @@ export class MailService {
         return this.snapshot();
       } finally {
         this.busy.delete(key);
+        if (connectionProfile) this.busy.delete(connectionProfile);
       }
     }
     if (c.op === "disconnect" || c.op === "forget") {
-      if (
-        [...this.busy].some((key) =>
-          key.startsWith("smtp:" + c.profileId + ":"),
-        )
-      )
+      if (this.profileBusy(c.profileId))
         throw new Error(
-          "Wait for the current SMTP operation before disconnecting this account.",
+          "Wait for the current message, SMTP or connection operation before disconnecting this account.",
         );
+      if (c.op === "forget") this.vault.forget(c.profileId);
       this.clients.get(c.profileId)?.transport.disconnect();
       this.clients.delete(c.profileId);
       for (const key of this.folderCache.keys())
         if (key.startsWith(c.profileId + ":")) this.folderCache.delete(key);
       for (const key of this.historyLoads.keys())
         if (key.startsWith(c.profileId + ":")) this.historyLoads.delete(key);
-      if (c.op === "forget") this.vault.forget(c.profileId);
       for (const [key, f] of this.files)
         if (f.profileId === c.profileId) this.files.delete(key);
       return this.snapshot();
@@ -255,22 +288,43 @@ export class MailService {
     if (c.op === "getDraft" || c.op === "listLocalDrafts") {
       const drafts = Object.entries(this.vault.data.drafts)
         .filter(([key]) => key === draftKey || key.startsWith(draftKey + ":"))
-        .map(([, draft]) => draft);
+        .map(([, draft]) => ({
+          ...draft,
+          attachments: draft.attachments.map((a) => {
+            const { unavailable, ...meta } = a;
+            const file = this.files.get(a.id);
+            return file?.profileId === c.profileId &&
+              file.accountId === c.accountId
+              ? meta
+              : { ...meta, unavailable: true };
+          }),
+        }));
       return c.op === "getDraft" ? drafts.at(-1) || null : drafts;
     }
     if (c.op === "saveLocalDraft") {
       // A disconnected but known account may still save a local draft.
       if (!this.vault.data.profiles.some((p) => p.id === c.profileId))
         throw new Error("Unknown account.");
-      if (c.compose)
-        this.vault.data.drafts[draftKey + ":" + c.compose.id] = c.compose;
+      const drafts = { ...this.vault.data.drafts };
+      const id = c.compose?.id || c.draftId;
+      const previous = Object.entries(drafts)
+        .filter(
+          ([k, d]) =>
+            (k === draftKey || k.startsWith(draftKey + ":")) && d.id === id,
+        )
+        .flatMap(([, d]) => d.attachments.map((a) => a.id));
+      if (c.compose) drafts[draftKey + ":" + c.compose.id] = c.compose;
       else {
         if (!c.draftId) throw new Error("Choose the specific draft to remove.");
-        delete this.vault.data.drafts[draftKey + ":" + c.draftId];
-        if (this.vault.data.drafts[draftKey]?.id === c.draftId)
-          delete this.vault.data.drafts[draftKey];
+        delete drafts[draftKey + ":" + c.draftId];
       }
-      this.vault.persist();
+      if (drafts[draftKey]?.id === id) delete drafts[draftKey];
+      this.vault.commit({ drafts });
+      this.releaseFiles(c.profileId, c.accountId, previous);
+      return true;
+    }
+    if (c.op === "releaseFiles") {
+      this.releaseFiles(c.profileId, c.accountId, c.ids);
       return true;
     }
     if (!client) throw new Error("Connect this account first.");
@@ -397,6 +451,7 @@ export class MailService {
     }
     if (c.op === "pasteClipboard" || c.op === "importPaste") {
       const result: PasteResult = { attachments: [], images: [] };
+      const registered: [string, AttachmentHandle][] = [];
       if (c.op === "pasteClipboard") {
         if (!this.dialogs.clipboard) return result;
         const media = await this.dialogs.clipboard();
@@ -413,13 +468,18 @@ export class MailService {
             throw new Error("Paste local files totaling less than 20 MB.");
           const id = randomUUID(),
             name = path.basename(filePath);
-          this.files.set(id, {
-            profileId: c.profileId,
-            accountId: c.accountId,
-            path: filePath,
-            name,
-            size: stat.size,
-          });
+          registered.push([
+            id,
+            {
+              profileId: c.profileId,
+              accountId: c.accountId,
+              path: filePath,
+              name,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              ctimeMs: stat.ctimeMs,
+            },
+          ]);
           result.attachments.push({ id, name, size: stat.size });
         }
         for (const image of media.images)
@@ -441,37 +501,57 @@ export class MailService {
             result.images.push({ src: imageDataUrl(bytes, asset.mime), name });
           else {
             const id = randomUUID();
-            this.files.set(id, {
-              profileId: c.profileId,
-              accountId: c.accountId,
-              bytes,
-              name,
-              size: bytes.length,
-            });
+            registered.push([
+              id,
+              {
+                profileId: c.profileId,
+                accountId: c.accountId,
+                bytes,
+                name,
+                size: bytes.length,
+              },
+            ]);
             result.attachments.push({ id, name, size: bytes.length });
           }
         }
       }
+      const imageStats = inlineImageStats(
+        result.images.map((image) => `<img src="${image.src}">`).join(""),
+      );
+      validateAttachmentBudget(
+        result.attachments,
+        imageStats.bytes,
+        imageStats.count,
+      );
+      for (const [id, handle] of registered) this.files.set(id, handle);
       return result;
     }
     if (c.op === "pickFiles") {
       const paths = await this.dialogs.pick();
       const result: LocalFile[] = [];
+      const registered: [string, AttachmentHandle][] = [];
       for (const filePath of paths) {
         const stat = await fs.stat(filePath);
         if (!stat.isFile() || stat.size > 20 * 1024 * 1024)
           throw new Error("Choose files smaller than 20 MB.");
         const id = randomUUID();
         const name = path.basename(filePath);
-        this.files.set(id, {
-          profileId: c.profileId,
-          accountId: c.accountId,
-          path: filePath,
-          name,
-          size: stat.size,
-        });
+        registered.push([
+          id,
+          {
+            profileId: c.profileId,
+            accountId: c.accountId,
+            path: filePath,
+            name,
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            ctimeMs: stat.ctimeMs,
+          },
+        ]);
         result.push({ id, name, size: stat.size });
       }
+      validateAttachmentBudget(result);
+      for (const [id, handle] of registered) this.files.set(id, handle);
       return result;
     }
     if (c.op === "saveAttachment") {
@@ -486,6 +566,10 @@ export class MailService {
       return "Attachment saved.";
     }
     if (c.op === "send" || c.op === "saveCloudDraft") {
+      if (!this.isConnected(c.profileId))
+        throw Error(
+          "Connect this mailbox before sending or saving a cloud draft. Your local draft is preserved.",
+        );
       const key = c.profileId + ":" + c.compose.id;
       if (this.busy.has(key))
         throw new Error("This message is already being submitted.");
@@ -523,29 +607,63 @@ export class MailService {
             "An SMTP operation is already running for this mailbox.",
           );
       }
-      if (
-        c.compose.attachments.reduce((n, a) => n + a.size, 0) +
-          [...embedded.values()].reduce((n, a) => n + a.bytes.length, 0) >
-        20 * 1024 * 1024
-      )
-        throw new Error("Attachments must total less than 20 MB.");
+      const owned = c.compose.attachments.map((a) => {
+        const file = this.files.get(a.id);
+        if (
+          !file ||
+          file.profileId !== c.profileId ||
+          file.accountId !== c.accountId
+        )
+          throw Error("Please reattach files after restarting the app.");
+        return { id: a.id, file };
+      });
+      validateAttachmentBudget(
+        owned.map(({ file }) => file),
+        [...embedded.values()].reduce((n, a) => n + a.bytes.length, 0),
+        embedded.size,
+      );
       this.busy.add(key);
       if (embedded.size) this.busy.add(smtpKey);
       try {
         const attachments = [];
         const fileBytes: MailBytes[] = [];
-        for (const a of c.compose.attachments) {
-          const f = this.files.get(a.id);
-          if (!f || f.profileId !== c.profileId || f.accountId !== c.accountId)
-            throw new Error("Please reattach files after restarting the app.");
-          const bytes = f.bytes || new Uint8Array(await fs.readFile(f.path!));
-          if (bytes.length !== f.size || bytes.length > 20 * 1024 * 1024)
-            throw new Error(
+        const prepared: MailBytes[] = [];
+        for (const { file: f } of owned) {
+          const changed = () =>
+            new Error(
               "An attachment changed. Remove it and attach the current file.",
             );
-          if (embedded.size) fileBytes.push({ name: f.name, bytes });
+          if (f.path) {
+            const stat = await fs.stat(f.path);
+            if (
+              !stat.isFile() ||
+              stat.size !== f.size ||
+              stat.mtimeMs !== f.mtimeMs ||
+              stat.ctimeMs !== f.ctimeMs
+            )
+              throw changed();
+          }
+          const bytes = f.bytes || new Uint8Array(await fs.readFile(f.path!));
+          if (bytes.length !== f.size || bytes.length > 20 * 1024 * 1024)
+            throw changed();
+          if (f.path) {
+            const stat = await fs.stat(f.path);
+            if (
+              stat.size !== f.size ||
+              stat.mtimeMs !== f.mtimeMs ||
+              stat.ctimeMs !== f.ctimeMs
+            )
+              throw changed();
+          }
+          prepared.push({ name: f.name, bytes });
+        }
+        // No upload or submission occurs until every owned file is validated.
+        for (const file of prepared) {
+          if (embedded.size) fileBytes.push(file);
           else
-            attachments.push(await client.upload(c.accountId, f.name, bytes));
+            attachments.push(
+              await client.upload(c.accountId, file.name, file.bytes),
+            );
         }
         let smtpOptions;
         if (embedded.size) {
@@ -567,6 +685,13 @@ export class MailService {
           );
         }
         if (c.op === "send") {
+          if (
+            this.clients.get(c.profileId) !== client ||
+            !this.isConnected(c.profileId)
+          )
+            throw Error(
+              "The mailbox disconnected before submission. Reconnect after reviewing the account; your draft was not submitted.",
+            );
           this.vault.data.submitted[key] = "pending";
           try {
             this.vault.persist();
@@ -606,13 +731,22 @@ export class MailService {
             this.vault.persist();
             throw failure;
           }
-        } else
-          response = await client.send(
-            c.accountId,
-            c.compose,
-            attachments,
-            c.op === "saveCloudDraft",
-          );
+        } else {
+          try {
+            response = await client.send(
+              c.accountId,
+              c.compose,
+              attachments,
+              c.op === "saveCloudDraft",
+            );
+          } catch (error) {
+            if (c.op === "send" && error instanceof UnsentRequestError) {
+              delete this.vault.data.submitted[key];
+              this.vault.persist();
+            }
+            throw error;
+          }
+        }
         if (c.op === "send") {
           this.vault.data.submitted[key] = "sent";
           this.vault.remember(draftKey, remembered);
@@ -631,6 +765,12 @@ export class MailService {
         }
         return response;
       } finally {
+        if (c.op === "send" && this.vault.data.submitted[key] === "sent")
+          this.releaseFiles(
+            c.profileId,
+            c.accountId,
+            owned.map((f) => f.id),
+          );
         this.busy.delete(key);
         if (embedded.size) this.busy.delete(smtpKey);
       }

@@ -4,11 +4,13 @@ A standalone Windows client for Zoho Mail, built for a familiar three-pane workf
 
 ## Run
 
-[Download the Windows executable from GitHub Releases](https://github.com/safetyfluent/FluentMail/releases/latest). Open the downloaded file; Node.js is not required. On the development PC, the full path is **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.6.0-Windows-x64.exe`**. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
+Version 1.7 fixes draft clearing and recovery, validates attachments before upload, improves recipient editing and protects against stale connection responses. It also adds **File → Exit Fluent Mail** and **Ctrl+Shift+Q**, using the same draft-saving exit flow as the tray menu. [Detailed audit and fixes](docs/REVIEW-1.7.md).
+
+[Download the Windows executable from GitHub Releases](https://github.com/safetyfluent/FluentMail/releases/latest). Open the downloaded file; Node.js is not required. On the development PC, the full path is **`C:\Projects\SafetyFluent\Zoho Mail\release\Fluent-Mail-1.7.0-Windows-x64.exe`**. The unpacked alternative is `C:\Projects\SafetyFluent\Zoho Mail\release\win-unpacked\Fluent Mail.exe` (keep that entire directory together).
 
 v1.6 makes conversation order explicit: newest first by default, an optional remembered oldest-first order, Latest/Earlier/Unread labels, sequence numbers, clear timestamps and Go to latest. Earlier-message replies remain tied to the selected message. [Research and decisions](docs/CONVERSATION-UX.md).
 
-![Fluent Mail conversation interface with fictional mail](docs/screenshots/1.6/conversation.jpg)
+![Fluent Mail conversation interface with fictional mail](docs/screenshots/1.7/conversation.jpg)
 
 v1.5 adds conversation chains with message-count badges and safe received inline images. It also includes two-character recipient suggestions, Send now during the countdown, Del-to-Trash, single-line rows and optional SMTP sending for inline images. History and credentials stay encrypted and separate for every mailbox. See [the image investigation and resolution](docs/INLINE-IMAGES.md).
 

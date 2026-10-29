@@ -28,6 +28,65 @@ function setup() {
 }
 const ref = { accountId: "100", profileId: "p" };
 describe("documented mail operations", () => {
+  it("normalizes committed recipient chips without sending empty trailing recipients", async () => {
+    const { mail, request } = setup();
+    await mail.send(
+      "100",
+      {
+        ...blankCompose("alex@example.test"),
+        to: " jamie@example.test, morgan@example.test, ",
+        cc: "cc@example.test; ",
+        bcc: "hidden@example.test, ",
+      },
+      [],
+    );
+    expect(request.mock.calls[0][2]).toMatchObject({
+      toAddress: "jamie@example.test, morgan@example.test",
+      ccAddress: "cc@example.test",
+      bccAddress: "hidden@example.test",
+    });
+  });
+  it("does not request inline metadata for a remote tracking image that will remain blocked", async () => {
+    const { mail, request } = setup();
+    request.mockResolvedValueOnce({
+      content: '<p>Hello</p><img src="https://tracker.example.test/pixel">',
+    });
+    const result: any = await mail.execute({
+      op: "detail",
+      ...ref,
+      folderId: "20",
+      messageId: "1001",
+      attachments: false,
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(result.html).toContain("Hello");
+    expect(result.html).not.toContain("<img");
+  });
+  it("stops malformed list entries before constructing requests with invalid identifiers", async () => {
+    const { mail, request } = setup();
+    request.mockResolvedValueOnce([null]);
+    await expect(
+      mail.execute({
+        op: "list",
+        ...ref,
+        folderId: "20",
+        filter: "all",
+        start: 1,
+      }),
+    ).rejects.toThrow("Unexpected message list entry");
+    request.mockResolvedValueOnce([
+      { messageId: "1001", folderId: "not-an-id" },
+    ]);
+    await expect(
+      mail.execute({
+        op: "list",
+        ...ref,
+        folderId: "20",
+        filter: "all",
+        start: 1,
+      }),
+    ).rejects.toThrow("Unexpected folder identifier");
+  });
   it("supports a bounded unthreaded metadata page for counts when provider counts are zero", async () => {
     const { mail, request } = setup();
     await mail.execute({

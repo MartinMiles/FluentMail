@@ -33,6 +33,111 @@ function setup(
   return { transport, save, fetcher: fetchMock };
 }
 describe("Zoho transport contracts and stop conditions", () => {
+  it("does not mistake a downloaded JSON report with an error-code field for an API rejection", async () => {
+    const report =
+      '{"status":{"code":400},"data":{"message":"report content"}}';
+    const s = setup(
+      async () =>
+        new Response(report, {
+          headers: {
+            "content-type": "application/json",
+            "content-disposition": 'attachment; filename="report.json"',
+          },
+        }),
+    );
+    const bytes = await s.transport.request(
+      "/api/accounts/1/folders/2/messages/3/attachments/4",
+      "GET",
+      undefined,
+      true,
+    );
+    expect(new TextDecoder().decode(bytes)).toBe(report);
+    expect(s.transport.connected).toBe(true);
+  });
+  it("renews once before dispatch when an access token expires in the pacing queue, without retrying a mail request", async () => {
+    const pacer = new Pacer(0);
+    const fetcher = vi.fn(async (url: string) =>
+      url.endsWith("/token")
+        ? new Response(
+            JSON.stringify({ access_token: "fresh", expires_in: 3600 }),
+          )
+        : new Response('{"status":{"code":200},"data":[]}'),
+    );
+    const t = new ZohoTransport(secret(), { save: () => {} }, pacer, fetcher);
+    t.connected = true;
+    vi.spyOn(pacer, "run").mockImplementationOnce(async (fn) => {
+      t.secret.expiresAt = 0;
+      return fn();
+    });
+    await t.request("/api/accounts/1/messages/view");
+    expect(
+      fetcher.mock.calls.filter(([url]) => url.endsWith("/token")),
+    ).toHaveLength(1);
+    expect(
+      fetcher.mock.calls.filter(([url]) => url.includes("/messages/view")),
+    ).toHaveLength(1);
+    expect(t.connected).toBe(true);
+  });
+  it("stops a too-short token response at its first result instead of refreshing again", async () => {
+    const s = setup(
+      async () =>
+        new Response(JSON.stringify({ access_token: "short", expires_in: 10 })),
+    );
+    s.transport.secret.expiresAt = 0;
+    await expect(s.transport.request("/api/accounts")).rejects.toThrow(
+      "too short",
+    );
+    expect(s.fetcher).toHaveBeenCalledTimes(1);
+    expect(s.transport.connected).toBe(false);
+  });
+  it("accepts dots and URL text in encoded queries while rejecting route escapes", async () => {
+    const s = setup();
+    await s.transport.request(
+      "/api/accounts/1/messages/search?" +
+        new URLSearchParams({
+          searchKey: "subject:report..pdf https://example.test",
+        }),
+    );
+    expect(s.fetcher).toHaveBeenCalledTimes(1);
+    for (const route of [
+      "/api/accounts/../private",
+      "/api/accountsevil",
+      "https://evil.test/api/accounts",
+      "/api/accounts/%2e%2e/private",
+    ])
+      await expect(s.transport.request(route)).rejects.toThrow(
+        "Invalid API route",
+      );
+    expect(s.fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("cancels an oversized chunked download before buffering the whole response", async () => {
+    const cancel = vi.fn();
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent++;
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+      },
+      cancel,
+    });
+    const s = setup(
+      async () =>
+        new Response(stream, {
+          headers: { "content-type": "application/octet-stream" },
+        }),
+    );
+    await expect(
+      s.transport.request(
+        "/api/accounts/1/folders/2/messages/3/attachments/4",
+        "GET",
+        undefined,
+        true,
+      ),
+    ).rejects.toThrow("30 MB");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(sent).toBeLessThanOrEqual(5);
+    expect(s.transport.connected).toBe(true);
+  });
   it("identifies a rejected operation without disclosing provider payloads or private query values", async () => {
     const { transport, fetcher } = setup(
       async () =>

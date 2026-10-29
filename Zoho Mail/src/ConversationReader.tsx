@@ -22,7 +22,8 @@ import {
   rememberConversationOrder,
   type ConversationOrder,
 } from "./conversations";
-import { cleanText, safeMail } from "./sanitize";
+import { cleanText } from "./sanitize";
+import { MessageContent } from "./MessageContent";
 
 type Mode = "reply" | "all" | "forward" | "edit";
 type Props = {
@@ -324,7 +325,7 @@ export function ConversationReader(props: Props) {
             <button
               className="latest-jump"
               onClick={goLatest}
-              disabled={loading || !!failure}
+              disabled={loading || busy || !!failure}
             >
               <ArrowUpRight size={14} />
               Go to latest
@@ -373,7 +374,6 @@ export function ConversationReader(props: Props) {
         const id = memberKey(m),
           detail = details[id],
           isOpen = expanded.has(id);
-        const safe = detail ? safeMail(detail.html, dark) : null;
         const isLatest = id === latestId;
         const ordinal = chronology.findIndex((p) => memberKey(p) === id) + 1;
         const own = addresses(m.from).some((email) =>
@@ -395,6 +395,7 @@ export function ConversationReader(props: Props) {
           >
             <button
               className="conversation-summary"
+              disabled={busy}
               aria-expanded={isOpen}
               aria-current={active === id ? "true" : undefined}
               onClick={() => toggle(m)}
@@ -452,6 +453,7 @@ export function ConversationReader(props: Props) {
               <div
                 className="conversation-body"
                 onFocus={() => {
+                  if (busy) return;
                   activeKey.current = id;
                   setActive(id);
                   callbacks.current.onActive(m, detail || null);
@@ -463,25 +465,27 @@ export function ConversationReader(props: Props) {
                 </p>
                 {pending.has(id) ? (
                   <p role="status">Opening message…</p>
-                ) : detail && safe ? (
+                ) : detail ? (
                   <>
                     {detail.imageWarning && (
                       <p className="conversation-warning" role="status">
                         {detail.imageWarning}
                       </p>
                     )}
-                    <div className="message-document">
-                      <iframe
-                        title={
-                          active === id
-                            ? "Email content"
-                            : `Email content from ${cleanText(m.sender)}`
-                        }
-                        sandbox=""
-                        referrerPolicy="no-referrer"
-                        srcDoc={safe.document}
-                      />
-                    </div>
+                    <MessageContent
+                      html={detail.html}
+                      dark={dark}
+                      title={
+                        active === id
+                          ? "Email content"
+                          : `Email content from ${cleanText(m.sender)}`
+                      }
+                      onOpenLink={(url) =>
+                        void call({ op: "openLink", url }).catch(
+                          callbacks.current.onFailure,
+                        )
+                      }
+                    />
                     {detail.attachments.length > 0 && (
                       <div className="attachments">
                         <h4>
@@ -519,28 +523,6 @@ export function ConversationReader(props: Props) {
                           </button>
                         ))}
                       </div>
-                    )}
-                    {safe.links.length > 0 && (
-                      <details className="message-links">
-                        <summary>
-                          Links in this message ({safe.links.length})
-                        </summary>
-                        {safe.links.map((link) => (
-                          <button
-                            key={link.url}
-                            className="text-button"
-                            onClick={() =>
-                              void call({
-                                op: "openLink",
-                                url: link.url,
-                              }).catch(callbacks.current.onFailure)
-                            }
-                          >
-                            {link.label}
-                            <small>{link.url}</small>
-                          </button>
-                        ))}
-                      </details>
                     )}
                     <div className="reply-buttons">
                       {!isLatest && (

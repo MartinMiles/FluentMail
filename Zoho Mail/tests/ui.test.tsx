@@ -79,6 +79,161 @@ async function inbox() {
   return userEvent.setup();
 }
 describe("offline inbox workflows", () => {
+  it("opens Inbox when a notification is clicked while viewing Sent in the same mailbox", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: "Sent" }));
+    await screen.findByRole("heading", { name: "Sent" });
+    const message = backend.messages.find((m) => m.id === "1000")!;
+    await act(async () =>
+      backend.emit({
+        type: "open-message",
+        account: backend.accounts[0],
+        message,
+      }),
+    );
+    await screen.findByRole("heading", { name: "Inbox" });
+    await screen.findByTitle("Email content");
+    expect(
+      mockCall.mock.calls
+        .filter(([c]) => c.op === "list" && c.limit !== 200 && !c.threadId)
+        .at(-1)?.[0].folderId,
+    ).toBe("1");
+  });
+  it("does not report another mailbox check time as the selected mailbox check", async () => {
+    await inbox();
+    await act(async () =>
+      backend.emit({
+        type: "inbox",
+        update: {
+          account: backend.accounts[2],
+          messages: [],
+          fresh: [],
+          hasMore: false,
+          checkedAt: Date.now(),
+          catchUpLimited: false,
+        },
+      }),
+    );
+    expect(
+      document.querySelector(".heading-actions")?.textContent,
+    ).not.toContain("Checked");
+    await act(async () =>
+      backend.emit({
+        type: "inbox",
+        update: {
+          account: backend.accounts[0],
+          messages: backend.messages.filter(
+            (m) =>
+              m.profileId === "demo" &&
+              m.accountId === "100" &&
+              m.folderId === "1",
+          ),
+          fresh: [],
+          hasMore: false,
+          checkedAt: Date.now(),
+          catchUpLimited: false,
+        },
+      }),
+    );
+    expect(document.querySelector(".heading-actions")?.textContent).toContain(
+      "Checked",
+    );
+  });
+  it("clears consumed bulk selections after moving checked mail", async () => {
+    const user = await inbox();
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select Thursday works for me" }),
+    );
+    await user.click(
+      within(document.querySelector(".mail-toolbar") as HTMLElement).getByRole(
+        "button",
+        { name: "Archive" },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Open Thursday works for me" }),
+      ).toBeNull(),
+    );
+    expect(
+      (
+        within(
+          document.querySelector(".mail-toolbar") as HTMLElement,
+        ).getByRole("button", {
+          name: "Archive",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+  it("resets an unread view when starting an all-mail search instead of showing a misleading selected filter", async () => {
+    const user = await inbox();
+    await user.click(screen.getByRole("button", { name: "Unread" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Search mail" }),
+      "subject:Receipt{Enter}",
+    );
+    await screen.findByRole("button", { name: "Open Receipt for order #1048" });
+    expect(screen.getByRole("button", { name: "All" }).className).toContain(
+      "selected",
+    );
+    expect(
+      mockCall.mock.calls.some(
+        ([c]) =>
+          c.op === "list" &&
+          c.query === "subject:Receipt" &&
+          c.filter === "all",
+      ),
+    ).toBe(true);
+  });
+  it("quotes a message with an unavailable date without breaking Reply", async () => {
+    backend.messages[0].time = Infinity;
+    const user = await inbox();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    );
+    await screen.findByTitle("Email content");
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await screen.findByRole("dialog", { name: "Reply" });
+    expect(
+      screen.getByRole("textbox", { name: "Message body" }).textContent,
+    ).toContain("Time unavailable");
+  });
+  it("blocks global reply while the newly selected message body is pending", async () => {
+    const user = await inbox();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open A little breathing room for your inbox",
+      }),
+    );
+    await screen.findByTitle("Email content");
+    const normal = mockCall.getMockImplementation()!;
+    let finish!: (detail: unknown) => void;
+    mockCall.mockImplementation((c: Command) =>
+      c.op === "detail" && c.messageId === "1001"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : normal(c),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Open Thursday works for me" }),
+    );
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Reply",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    await user.keyboard("r");
+    expect(screen.queryByRole("dialog", { name: "Reply" })).toBeNull();
+    await act(async () =>
+      finish({ html: "<p>New message body</p>", attachments: [] }),
+    );
+    await screen.findByTitle("Email content");
+  });
   it("keeps the exact opened-conversation count when a bounded summary scan finishes late", async () => {
     const normal = mockCall.getMockImplementation()!;
     let finish!: (value: unknown) => void;

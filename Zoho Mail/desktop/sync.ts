@@ -131,6 +131,8 @@ export class InboxSync {
           catchUpLimited: pageCount === 5 && page.hasMore,
         });
       } catch (error) {
+        // A stopped/replaced sweep must never poison the new connection.
+        if (epoch !== this.epoch) return;
         this.failedProfiles.add(account.profileId);
         this.onError(account, error);
       }

@@ -72,6 +72,383 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
 });
 describe("application boundary and persistence", () => {
+  it("does not resurrect forgotten credentials when an old mailbox request fails later", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    s.fetcher.mockResolvedValueOnce(
+      ok([
+        {
+          folderId: "1",
+          folderName: "Inbox",
+          folderType: "Inbox",
+          path: "/Inbox",
+        },
+      ]),
+    );
+    await s.service.invoke({ op: "folders", ...ref });
+    let complete!: (response: Response) => void;
+    s.fetcher.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const poll = s.service
+      .pollInbox(s.service.snapshot().accounts[0])
+      .catch((error) => error);
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    expect(
+      (await s.service.invoke({ op: "forget", profileId: ref.profileId })).ok,
+    ).toBe(true);
+    complete(
+      new Response(JSON.stringify({ status: { code: 403 }, data: {} }), {
+        status: 403,
+      }),
+    );
+    await poll;
+    expect(s.vault.data.profiles).toHaveLength(0);
+    expect(
+      new Vault(path.join(s.dir, "fixture.vault"), cipher).data.profiles,
+    ).toHaveLength(0);
+  });
+  it("discards a late token renewal after Forget without storing tokens or issuing a mailbox read", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    s.fetcher.mockResolvedValueOnce(
+      ok([
+        {
+          folderId: "1",
+          folderName: "Inbox",
+          folderType: "Inbox",
+          path: "/Inbox",
+        },
+      ]),
+    );
+    await s.service.invoke({ op: "folders", ...ref });
+    s.vault.data.profiles[0].expiresAt = 0;
+    let complete!: (response: Response) => void;
+    s.fetcher.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const poll = s.service
+      .pollInbox(s.service.snapshot().accounts[0])
+      .catch((error) => error);
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    await s.service.invoke({ op: "forget", profileId: ref.profileId });
+    const before = s.fetcher.mock.calls.length;
+    complete(
+      new Response(
+        JSON.stringify({
+          access_token: "late-fixture-token",
+          expires_in: 3600,
+        }),
+      ),
+    );
+    await poll;
+    expect(s.vault.data.profiles).toHaveLength(0);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(
+      new Vault(path.join(s.dir, "fixture.vault"), cipher).data.profiles,
+    ).toHaveLength(0);
+  });
+  it("migrates an edited legacy draft without leaving an obsolete duplicate", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      key = ref.profileId + ":100";
+    const original = { ...blankCompose("alex@example.test"), body: "Old text" };
+    s.vault.data.drafts[key] = original;
+    s.vault.persist();
+    const edited = { ...original, body: "Current text" };
+    expect(
+      (
+        await s.service.invoke({
+          op: "saveLocalDraft",
+          ...ref,
+          compose: edited,
+        })
+      ).ok,
+    ).toBe(true);
+    expect(s.vault.data.drafts[key]).toBeUndefined();
+    const result = await s.service.invoke({ op: "listLocalDrafts", ...ref });
+    expect(result).toEqual({ ok: true, value: [edited] });
+  });
+  it("keeps prior draft and preference state when protected storage fails", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      draft = {
+        ...blankCompose("alex@example.test"),
+        body: "Original saved text",
+      };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose: draft });
+    const old = s.vault.data.drafts;
+    const failure = vi.spyOn(s.vault, "persist").mockImplementation(() => {
+      throw Error("Disk unavailable");
+    });
+    expect(
+      (
+        await s.service.invoke({
+          op: "saveLocalDraft",
+          ...ref,
+          compose: { ...draft, body: "Unsaved edit" },
+        })
+      ).ok,
+    ).toBe(false);
+    expect(s.vault.data.drafts).toBe(old);
+    const before = s.vault.preferences();
+    expect(
+      (
+        await s.service.invoke({
+          op: "preferences",
+          preferences: { ...before, automaticChecks: false },
+        })
+      ).ok,
+    ).toBe(false);
+    expect(s.vault.preferences()).toEqual(before);
+    expect(
+      (await s.service.invoke({ op: "forget", profileId: ref.profileId })).ok,
+    ).toBe(false);
+    expect(s.service.isConnected(ref.profileId)).toBe(true);
+    expect(s.vault.data.profiles).toHaveLength(1);
+    failure.mockRestore();
+  });
+  it("marks restored file handles as unavailable without authenticating or losing the draft", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    const file = path.join(s.dir, "kept.txt");
+    fs.writeFileSync(file, "content");
+    s.dialogs.pick.mockResolvedValueOnce([file]);
+    const picked: any = await s.service.invoke({ op: "pickFiles", ...ref });
+    const draft = {
+      ...blankCompose("alex@example.test"),
+      body: "Keep me",
+      attachments: picked.value,
+    };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose: draft });
+    const restarted = new MailService(
+      s.vault,
+      s.dialogs,
+      new Pacer(0),
+      s.fetcher,
+    );
+    const before = s.fetcher.mock.calls.length;
+    const restored: any = await restarted.invoke({
+      op: "listLocalDrafts",
+      ...ref,
+    });
+    expect(restored.value[0].attachments[0].unavailable).toBe(true);
+    expect(restored.value[0].body).toBe("Keep me");
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+  });
+  it("enforces actual registered attachment totals even if renderer sizes are forged", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      files = [];
+    for (const [name, size] of [
+      ["one.bin", 16 * 1024 * 1024],
+      ["two.bin", 8 * 1024 * 1024],
+    ] as const) {
+      const file = path.join(s.dir, name);
+      fs.writeFileSync(file, "");
+      fs.truncateSync(file, size);
+      s.dialogs.pick.mockResolvedValueOnce([file]);
+      const picked: any = await s.service.invoke({ op: "pickFiles", ...ref });
+      files.push({ ...picked.value[0], size: 0 });
+    }
+    const before = s.fetcher.mock.calls.length,
+      draft = {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+        attachments: files,
+      };
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose: draft,
+      confirmed: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/20 MB/);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(
+      s.vault.data.submitted[ref.profileId + ":" + draft.id],
+    ).toBeUndefined();
+  });
+  it("does not upload the first attachment when a later attachment disappeared or changed", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    const first = path.join(s.dir, "one.txt"),
+      second = path.join(s.dir, "two.txt");
+    fs.writeFileSync(first, "a");
+    fs.writeFileSync(second, "b");
+    s.dialogs.pick.mockResolvedValueOnce([first, second]);
+    const picked: any = await s.service.invoke({ op: "pickFiles", ...ref });
+    fs.unlinkSync(second);
+    const before = s.fetcher.mock.calls.length;
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose: {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+        attachments: picked.value,
+      },
+      confirmed: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(s.service.isBusy()).toBe(false);
+  });
+  it("detects same-size edits to an attachment before any upload", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      file = path.join(s.dir, "edited.txt");
+    fs.writeFileSync(file, "aa");
+    s.dialogs.pick.mockResolvedValueOnce([file]);
+    const picked: any = await s.service.invoke({ op: "pickFiles", ...ref });
+    fs.writeFileSync(file, "bb");
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+    const before = s.fetcher.mock.calls.length;
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose: {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+        attachments: picked.value,
+      },
+      confirmed: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/attachment changed/);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+  });
+  it("blocks reconnect, disconnect and forgetting while an API send is in progress", async () => {
+    const s = setup(),
+      ref = await connect(s);
+    let complete!: (response: Response) => void;
+    s.fetcher.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const sending = s.service.invoke({
+      op: "send",
+      ...ref,
+      compose: {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+      },
+      confirmed: true,
+    });
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    const before = s.fetcher.mock.calls.length;
+    for (const op of ["resume", "disconnect", "forget"])
+      expect(
+        (
+          await s.service.invoke({
+            op,
+            profileId: ref.profileId,
+            reviewed: true,
+          })
+        ).ok,
+      ).toBe(false);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(s.vault.data.profiles).toHaveLength(1);
+    complete(ok({ messageId: "900" }));
+    expect((await sending).ok).toBe(true);
+  });
+  it("does not retain an uncertain-send marker when the request never reached the mail API", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      draft = {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+      };
+    const key = ref.profileId + ":" + draft.id;
+    const persist = s.vault.persist.bind(s.vault);
+    let stopped = false;
+    const spy = vi.spyOn(s.vault, "persist").mockImplementation((data) => {
+      persist(data);
+      if (!stopped && s.vault.data.submitted[key] === "pending") {
+        stopped = true;
+        s.service.stopAll();
+      }
+    });
+    const before = s.fetcher.mock.calls.length;
+    expect(
+      (
+        await s.service.invoke({
+          op: "send",
+          ...ref,
+          compose: draft,
+          confirmed: true,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(s.vault.data.submitted[key]).toBeUndefined();
+    spy.mockRestore();
+  });
+  it("does not create a send marker for an already disconnected mailbox", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      draft = {
+        ...blankCompose("alex@example.test"),
+        to: "jamie@example.test",
+      };
+    s.service.stopAll();
+    const before = s.fetcher.mock.calls.length;
+    expect(
+      (
+        await s.service.invoke({
+          op: "send",
+          ...ref,
+          compose: draft,
+          confirmed: true,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(
+      s.vault.data.submitted[ref.profileId + ":" + draft.id],
+    ).toBeUndefined();
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+  });
+  it("releases a removed draft attachment handle while leaving the owners actual file untouched", async () => {
+    const s = setup(),
+      ref = await connect(s),
+      file = path.join(s.dir, "real-file.txt");
+    fs.writeFileSync(file, "keep actual file");
+    s.dialogs.pick.mockResolvedValueOnce([file]);
+    const picked: any = await s.service.invoke({ op: "pickFiles", ...ref });
+    const draft = {
+      ...blankCompose("alex@example.test"),
+      attachments: picked.value,
+    };
+    await s.service.invoke({ op: "saveLocalDraft", ...ref, compose: draft });
+    await s.service.invoke({
+      op: "saveLocalDraft",
+      ...ref,
+      compose: { ...draft, attachments: [] },
+    });
+    const before = s.fetcher.mock.calls.length;
+    const result = await s.service.invoke({
+      op: "send",
+      ...ref,
+      compose: {
+        ...blankCompose(draft.from),
+        to: "jamie@example.test",
+        attachments: picked.value,
+      },
+      confirmed: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(s.fetcher).toHaveBeenCalledTimes(before);
+    expect(fs.readFileSync(file, "utf8")).toBe("keep actual file");
+  });
   it("does not authenticate SMTP for cloud image drafts or unsupported scheduling", async () => {
     const smtp = {
       send: vi.fn<SmtpSender["send"]>(async () => ({
@@ -404,7 +781,9 @@ describe("application boundary and persistence", () => {
     s.fetcher
       .mockResolvedValueOnce(ok(folders))
       .mockResolvedValueOnce(
-        ok([{ messageId: "1", toAddress: "before@example.test" }]),
+        ok([
+          { messageId: "1", folderId: "2", toAddress: "before@example.test" },
+        ]),
       );
     expect(
       (await s.service.invoke({ op: "recipientHistory", ...ref })).ok,
@@ -439,7 +818,9 @@ describe("application boundary and persistence", () => {
     s.fetcher
       .mockResolvedValueOnce(ok(folders))
       .mockResolvedValueOnce(
-        ok([{ messageId: "2", toAddress: "after@example.test" }]),
+        ok([
+          { messageId: "2", folderId: "2", toAddress: "after@example.test" },
+        ]),
       );
     expect(await s.service.invoke({ op: "recipientHistory", ...ref })).toEqual({
       ok: true,
@@ -464,6 +845,7 @@ describe("application boundary and persistence", () => {
           ? ok([
               {
                 messageId: "300",
+                folderId: "2",
                 toAddress: "Jamie <jamie@example.test>",
                 ccAddress: "cc@example.test",
               },
