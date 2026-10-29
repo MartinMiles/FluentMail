@@ -14,13 +14,16 @@ const history = [
 function Field() {
   const [value, setValue] = useState("");
   return (
-    <Recipients
-      label="To recipients"
-      value={value}
-      onChange={setValue}
-      disabled={false}
-      history={history}
-    />
+    <>
+      <output data-testid="recipient-value">{value}</output>
+      <Recipients
+        label="To recipients"
+        value={value}
+        onChange={setValue}
+        disabled={false}
+        history={history}
+      />
+    </>
   );
 }
 describe("recipient suggestions", () => {
@@ -55,7 +58,12 @@ describe("recipient suggestions", () => {
     await user.type(field, "a");
     expect(screen.getAllByRole("option")).toHaveLength(2);
     await user.keyboard("{ArrowDown}{Enter}");
-    expect((field as HTMLInputElement).value).toBe("james@example.test, ");
+    expect((field as HTMLInputElement).value).toBe("");
+    expect(
+      screen.getByRole("button", {
+        name: "Remove recipient james@example.test",
+      }),
+    ).toBeTruthy();
     await user.type(field, "ja");
     expect(screen.getAllByRole("option")).toHaveLength(1);
     await user.keyboard("{Escape}");
@@ -65,8 +73,49 @@ describe("recipient suggestions", () => {
     await user.click(
       screen.getByRole("option", { name: "jamie@example.test" }),
     );
-    expect((field as HTMLInputElement).value).toBe(
+    expect(screen.getByTestId("recipient-value").textContent).toBe(
       "james@example.test, jamie@example.test, ",
+    );
+  });
+  it("commits a typed address and allows typing a second recipient without concatenation", async () => {
+    render(<Field />);
+    const user = userEvent.setup(),
+      input = screen.getByRole("combobox");
+    await user.type(
+      input,
+      "first@example.test{Enter}second@example.test{Enter}",
+    );
+    expect(screen.getByTestId("recipient-value").textContent).toBe(
+      "first@example.test, second@example.test, ",
+    );
+    expect(
+      screen.getAllByRole("button", { name: /Remove recipient/ }),
+    ).toHaveLength(2);
+    expect((input as HTMLInputElement).value).toBe("");
+  });
+  it("keeps committed recipients while removing a chip and preserves an invalid unfinished tail", async () => {
+    render(<Field />);
+    const user = userEvent.setup(),
+      input = screen.getByRole("combobox");
+    await user.type(input, "first@example.test{Enter}unfinished@");
+    await user.click(
+      screen.getByRole("button", {
+        name: "Remove recipient first@example.test",
+      }),
+    );
+    expect(screen.getByTestId("recipient-value").textContent).toBe(
+      "unfinished@",
+    );
+    expect((input as HTMLInputElement).value).toBe("unfinished@");
+  });
+  it("can edit the last chip with Backspace instead of losing the address", async () => {
+    render(<Field />);
+    const user = userEvent.setup(),
+      input = screen.getByRole("combobox");
+    await user.type(input, "first@example.test{Enter}{Backspace}");
+    expect((input as HTMLInputElement).value).toBe("first@example.test");
+    expect(screen.getByTestId("recipient-value").textContent).toBe(
+      "first@example.test",
     );
   });
 });

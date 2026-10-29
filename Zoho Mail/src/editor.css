@@ -407,3 +407,21 @@
   background: var(--accent);
   transition: width 0.2s linear;
 }
+
+.attachment-chip.unavailable-attachment {
+  border: 1px solid #b85b4d;
+  background: #fff2ee;
+  color: #8a3025;
+}
+.unavailable-attachment small {
+  font-size: 10px;
+  font-weight: 600;
+}
+.recipients input[aria-invalid="true"] {
+  outline: 1px solid #b85b4d;
+}
+[data-theme="dark"] .attachment-chip.unavailable-attachment {
+  background: #392723;
+  color: #fac7bc;
+  border-color: #b87364;
+}

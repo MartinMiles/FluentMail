@@ -105,7 +105,12 @@ export type Detail = {
   headers?: string;
 };
 export type Signature = { id: string; name: string; content: string };
-export type LocalFile = { id: string; name: string; size: number };
+export type LocalFile = {
+  id: string;
+  name: string;
+  size: number;
+  unavailable?: boolean;
+};
 export type PasteResult = {
   attachments: LocalFile[];
   images: { src: string; name: string }[];
@@ -159,7 +164,14 @@ export const composeSchema = z.object({
   body: z.string().max(30_000_000),
   format: z.enum(["plaintext", "html"]).optional(),
   attachments: z
-    .array(z.object({ id, name: text, size: z.number().nonnegative() }))
+    .array(
+      z.object({
+        id,
+        name: text,
+        size: z.number().nonnegative(),
+        unavailable: z.boolean().optional(),
+      }),
+    )
     .max(20),
   replyId: z.string().max(100).optional(),
   replyFolderId: z.string().max(100).optional(),
@@ -264,6 +276,7 @@ export const commandSchema = z.discriminatedUnion("op", [
     color: z.string().regex(/^#[0-9a-f]{6}$/i),
   }),
   z.object({ op: z.literal("pickFiles"), ...ref }),
+  z.object({ op: z.literal("releaseFiles"), ...ref, ids: z.array(id).max(20) }),
   z.object({ op: z.literal("pasteClipboard"), ...ref }),
   z.object({
     op: z.literal("importPaste"),

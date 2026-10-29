@@ -16,6 +16,8 @@ import { RichEditor } from "./RichEditor";
 import { Recipients } from "./Recipients";
 import { registerDraftFlush } from "./draftFlush";
 import { SendDelay } from "./sendDelay";
+import { DraftPersistence, hasDraftContent } from "./draftPersistence";
+import { inlineImageStats, validateAttachmentBudget } from "./attachmentLimits";
 import {
   type Account,
   type Compose,
@@ -57,6 +59,7 @@ export function Composer({
   const [showBcc, setShowBcc] = useState(!!initial.bcc);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [draftError, setDraftError] = useState("");
   const [status, setStatus] = useState("");
   const [countdown, setCountdown] = useState<number | null>(null);
   const delay = useRef(new SendDelay());
@@ -65,6 +68,9 @@ export function Composer({
   const alive = useRef(true);
   const preparationGeneration = useRef(0);
   const [pasting, setPasting] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const mediaBusy = useRef(false);
+  const edited = useRef(false);
   const [focusRevision, setFocusRevision] = useState(0);
   const [discard, setDiscard] = useState(false);
   const [signatures, setSignatures] = useState<Signature[]>([]);
@@ -73,7 +79,15 @@ export function Composer({
   const latest = useRef(c);
   latest.current = c;
   const ref = { profileId: account.profileId, accountId: account.id };
-  const locked = busy || preparingSend || countdown !== null || pasting;
+  const locked =
+    busy || preparingSend || countdown !== null || pasting || attaching;
+  const persistence = useRef<DraftPersistence | null>(null);
+  if (!persistence.current)
+    persistence.current = new DraftPersistence(
+      (compose, draftId) =>
+        call({ op: "saveLocalDraft", ...ref, compose, draftId }),
+      c,
+    );
   const hasInline = /<img\b/i.test(c.body);
   const validateInline = (message: Compose, draft = false) => {
     if (demo || !/<img\b/i.test(message.body)) return;
@@ -113,28 +127,27 @@ export function Composer({
     [],
   );
   const patch = (data: Partial<Compose>) => {
+    edited.current = true;
     setC((old) => ({ ...old, ...data }));
   };
-  const hasContent = (draft: Compose) =>
-    !!(
-      draft.to.trim() ||
-      draft.cc.trim() ||
-      draft.bcc.trim() ||
-      draft.subject.trim() ||
-      mailPlainText(draft.body).trim() ||
-      /<img\b/i.test(draft.body) ||
-      draft.attachments.length
-    );
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (sending.current || preparing.current || !hasContent(c)) return;
-      void call({ op: "saveLocalDraft", ...ref, compose: c })
-        .then(() =>
-          setStatus(
-            demo ? "Draft saved in this demo" : "Draft saved on this PC",
-          ),
-        )
-        .catch((e) => setError(e.message));
+      if (sending.current || preparing.current || delay.current.pending) return;
+      void persistence
+        .current!.save(c)
+        .then(() => {
+          if (alive.current && latest.current === c) {
+            setDraftError("");
+            if (hasDraftContent(c))
+              setStatus(
+                demo ? "Draft saved in this demo" : "Draft saved on this PC",
+              );
+            else if (edited.current) setStatus("Draft cleared.");
+          }
+        })
+        .catch((e) => {
+          if (alive.current) setDraftError(e.message);
+        });
     }, 600);
     return () => clearTimeout(timer);
   }, [c]);
@@ -147,8 +160,11 @@ export function Composer({
           throw new Error(
             "Wait for the current message operation before exiting.",
           );
-        if (hasContent(latest.current))
-          await call({ op: "saveLocalDraft", ...ref, compose: latest.current });
+        if (mediaBusy.current)
+          throw Error(
+            "Wait for the attachment or paste operation before exiting.",
+          );
+        await persistence.current!.save(latest.current);
       }),
     [account.id, account.profileId],
   );
@@ -161,12 +177,11 @@ export function Composer({
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const close = async () => {
-    if (busy || preparing.current || pasting) return false;
+    if (busy || preparing.current || mediaBusy.current) return false;
     preparationGeneration.current++;
     delay.current.cancel();
     try {
-      if (hasContent(latest.current))
-        await call({ op: "saveLocalDraft", ...ref, compose: latest.current });
+      await persistence.current!.save(latest.current);
       onClose();
       return true;
     } catch (e) {
@@ -182,7 +197,7 @@ export function Composer({
     try {
       validateRecipients(message, account.aliases);
       if (!demo && /<img\b/i.test(message.body)) {
-        await call({ op: "saveLocalDraft", ...ref, compose: message });
+        await persistence.current!.save(message);
       }
       validateInline(message, draft);
       if (draft) {
@@ -197,12 +212,7 @@ export function Composer({
         });
         let warning = result?.warning;
         try {
-          await call({
-            op: "saveLocalDraft",
-            ...ref,
-            compose: null,
-            draftId: message.id,
-          });
+          await persistence.current!.remove(message.id);
         } catch {
           warning =
             "Zoho accepted the message, but local draft cleanup failed. Check Sent before creating another copy.";
@@ -217,12 +227,33 @@ export function Composer({
     }
   };
   const attach = async () => {
+    if (locked || mediaBusy.current) return;
+    mediaBusy.current = true;
+    setAttaching(true);
     setError("");
+    let files: LocalFile[] = [];
     try {
-      const files = await call<LocalFile[]>({ op: "pickFiles", ...ref });
-      patch({ attachments: [...c.attachments, ...files] });
+      files = await call<LocalFile[]>({ op: "pickFiles", ...ref });
+      const current = latest.current,
+        stats = inlineImageStats(current.body);
+      validateAttachmentBudget(
+        [...current.attachments, ...files],
+        stats.bytes,
+        stats.count,
+      );
+      if (files.length) edited.current = true;
+      setC((old) => ({ ...old, attachments: [...old.attachments, ...files] }));
     } catch (e) {
       setError((e as Error).message);
+      if (files.length)
+        void call({
+          op: "releaseFiles",
+          ...ref,
+          ids: files.map((f) => f.id),
+        }).catch(() => {});
+    } finally {
+      mediaBusy.current = false;
+      setAttaching(false);
     }
   };
   const requestSend = async () => {
@@ -238,10 +269,16 @@ export function Composer({
     const generation = preparationGeneration.current;
     try {
       validateRecipients(c, account.aliases);
+      if (c.attachments.some((a) => a.unavailable))
+        throw Error(
+          "Remove and reattach the unavailable files before sending.",
+        );
+      const stats = inlineImageStats(c.body);
+      validateAttachmentBudget(c.attachments, stats.bytes, stats.count);
       setError("");
       setDiscard(false);
       const message = structuredClone(c);
-      await call({ op: "saveLocalDraft", ...ref, compose: message });
+      await persistence.current!.save(message);
       validateInline(message);
       if (!alive.current || generation !== preparationGeneration.current)
         return;
@@ -254,12 +291,14 @@ export function Composer({
     }
   };
   const pasteMedia = async (files: File[]): Promise<PasteResult> => {
-    if (locked) throw new Error("Cancel the pending send before pasting.");
+    if (locked || mediaBusy.current)
+      throw new Error("Finish the current operation before pasting.");
+    mediaBusy.current = true;
     setPasting(true);
     setError("");
     setStatus("Pasting clipboard media…");
+    let result: PasteResult = { attachments: [], images: [] };
     try {
-      let result: PasteResult = { attachments: [], images: [] };
       if (window.mail)
         result = await call<PasteResult>({ op: "pasteClipboard", ...ref });
       if (!result.attachments.length && !result.images.length && files.length) {
@@ -286,6 +325,18 @@ export function Composer({
         }
         result = await call<PasteResult>({ op: "importPaste", ...ref, assets });
       }
+      const current = latest.current,
+        stats = inlineImageStats(
+          current.body +
+            result.images.map((image) => `<img src="${image.src}">`).join(""),
+        );
+      validateAttachmentBudget(
+        [...current.attachments, ...result.attachments],
+        stats.bytes,
+        stats.count,
+      );
+      if (result.attachments.length || result.images.length)
+        edited.current = true;
       if (result.attachments.length)
         setC((old) => ({
           ...old,
@@ -301,8 +352,15 @@ export function Composer({
       return result;
     } catch (e) {
       setError((e as Error).message);
+      if (result.attachments.length)
+        void call({
+          op: "releaseFiles",
+          ...ref,
+          ids: result.attachments.map((f) => f.id),
+        }).catch(() => {});
       throw e;
     } finally {
+      mediaBusy.current = false;
       setPasting(false);
     }
   };
@@ -316,6 +374,7 @@ export function Composer({
             : "New message"
       }
       wide
+      closeDisabled={busy || preparingSend || pasting || attaching}
       maximized={expanded}
       headerActions={
         <button
@@ -335,6 +394,7 @@ export function Composer({
           void requestSend();
         }}
         onKeyDown={(e) => {
+          if (e.defaultPrevented || e.nativeEvent.isComposing) return;
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
             if (!locked) void requestSend();
@@ -400,6 +460,7 @@ export function Composer({
             <span>Subject</span>
             <input
               aria-label="Subject"
+              maxLength={998}
               disabled={locked}
               value={c.subject}
               onChange={(e) => patch({ subject: e.target.value })}
@@ -417,29 +478,39 @@ export function Composer({
         />
         <div className="compose-attachments">
           {c.attachments.map((a, i) => (
-            <span className="attachment-chip" key={a.id + ":" + i}>
+            <span
+              className={
+                "attachment-chip" +
+                (a.unavailable ? " unavailable-attachment" : "")
+              }
+              key={a.id + ":" + i}
+            >
               <FileText size={15} />
               {a.name}
+              {a.unavailable && <small>Reattach before sending</small>}
               <button
                 type="button"
                 aria-label={"Remove " + a.name}
                 disabled={locked}
-                onClick={() =>
+                onClick={() => {
                   patch({
                     attachments: c.attachments.filter(
                       (_, index) => index !== i,
                     ),
-                  })
-                }
+                  });
+                  void call({ op: "releaseFiles", ...ref, ids: [a.id] }).catch(
+                    () => {},
+                  );
+                }}
               >
                 <X size={13} />
               </button>
             </span>
           ))}
         </div>
-        {error && (
+        {(error || draftError) && (
           <div role="alert" className="error-box">
-            {error}
+            {error || draftError}
           </div>
         )}
         {!demo &&
@@ -478,12 +549,8 @@ export function Composer({
               onClick={() => {
                 sending.current = true;
                 setBusy(true);
-                void call({
-                  op: "saveLocalDraft",
-                  ...ref,
-                  compose: null,
-                  draftId: c.id,
-                })
+                void persistence
+                  .current!.remove(c.id)
                   .then(onClose)
                   .catch((e) => {
                     setError(e.message);
@@ -601,6 +668,7 @@ export function Composer({
             {signatures.length > 0 && (
               <select
                 aria-label="Insert signature"
+                disabled={locked}
                 defaultValue=""
                 onChange={(e) => {
                   const s = signatures.find((s) => s.id === e.target.value);

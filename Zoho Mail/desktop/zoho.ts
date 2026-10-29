@@ -9,7 +9,11 @@ import {
   validateRecipients,
 } from "../src/shared";
 import { ZohoTransport, remoteId, normalizeMessage } from "./transport";
-import { imageSources, resolveReceivedImages } from "./receivedImages";
+import {
+  imageSources,
+  imageContentId,
+  resolveReceivedImages,
+} from "./receivedImages";
 
 export class ZohoMail {
   accounts: Account[] = [];
@@ -19,7 +23,23 @@ export class ZohoMail {
       return this.transport.stop(
         `Unexpected ${kind} response. Connection stopped without a retry.`,
       );
+    if (
+      value.some(
+        (item) => !item || typeof item !== "object" || Array.isArray(item),
+      )
+    )
+      return this.transport.stop(
+        `Unexpected ${kind} entry. Connection stopped without a retry.`,
+      );
     return value;
+  }
+  private identifier(value: unknown, kind: string) {
+    const id = String(value ?? "");
+    if (!/^\d{1,30}$/.test(id))
+      return this.transport.stop(
+        `Unexpected ${kind} identifier. Connection stopped without a retry.`,
+      );
+    return id;
   }
   async loadAccounts() {
     const data = await this.transport.request("/api/accounts");
@@ -79,7 +99,7 @@ export class ZohoMail {
       case "folders":
         return this.list(await request(base + "/folders"), "folder list").map(
           (f: any) => ({
-            id: String(f.folderId),
+            id: this.identifier(f.folderId, "folder"),
             name: String(f.folderName),
             path: String(f.path || "/" + f.folderName),
             type: String(f.folderType),
@@ -88,7 +108,7 @@ export class ZohoMail {
       case "labels":
         return this.list(await request(base + "/labels"), "label list").map(
           (l: any) => ({
-            id: String(l.labelId),
+            id: this.identifier(l.labelId, "label"),
             name: String(l.displayName),
             color: /^#[0-9a-f]{6}$/i.test(l.color) ? l.color : "#6182ba",
           }),
@@ -136,7 +156,13 @@ export class ZohoMail {
             "Unexpected message list response. Connection stopped without a retry.",
           );
         return {
-          messages: data.map(normalizeMessage),
+          messages: this.list(data, "message list").map((m) => {
+            this.identifier(m.messageId, "message");
+            this.identifier(m.folderId, "folder");
+            if (m.threadId != null && String(m.threadId) !== "")
+              this.identifier(m.threadId, "thread");
+            return normalizeMessage(m);
+          }),
           hasMore: data.length === limit,
         };
       }
@@ -151,8 +177,12 @@ export class ZohoMail {
           );
         let attachments = [];
         let inline = [];
-        const hasImages = imageSources(data.content).length > 0;
-        if (c.attachments || hasImages) {
+        const sources = imageSources(data.content);
+        const hasImages = sources.length > 0;
+        const needsInline = sources.some((src) =>
+          imageContentId(src, this.transport.secret.region),
+        );
+        if (c.attachments || needsInline) {
           const info = await request(
             messagePath(c.folderId, c.messageId) +
               "/attachmentinfo?includeInline=true",
@@ -299,11 +329,17 @@ export class ZohoMail {
   ) {
     const a = this.account(accountId);
     validateRecipients(c, a.aliases);
+    const recipients = (value: string) =>
+      value
+        .split(/[;,]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .join(", ");
     const body: Record<string, unknown> = {
       fromAddress: c.from,
-      toAddress: c.to.replaceAll(";", ","),
-      ccAddress: c.cc.replaceAll(";", ","),
-      bccAddress: c.bcc.replaceAll(";", ","),
+      toAddress: recipients(c.to),
+      ccAddress: recipients(c.cc),
+      bccAddress: recipients(c.bcc),
       subject: c.subject,
       content:
         c.format === "html"

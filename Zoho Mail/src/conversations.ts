@@ -19,7 +19,7 @@ export function rememberConversationOrder(order: ConversationOrder) {
     /* Optional local preference. */
   }
 }
-export const hasMessageTime = (m: Message) =>
+export const hasMessageTime = (m: Pick<Message, "time">) =>
   Number.isFinite(m.time) && m.time > 0 && m.time <= 8.64e15;
 /** Input follows the provider's explicitly descending date order. Preserve it
  * when timestamps are missing; message identifiers are never treated as clocks. */

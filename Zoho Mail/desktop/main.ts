@@ -384,6 +384,13 @@ else {
                 accelerator: "Alt+F4",
                 click: hide,
               },
+              { type: "separator" },
+              {
+                id: "file-quit",
+                label: "Exit Fluent Mail",
+                accelerator: "CommandOrControl+Shift+Q",
+                click: () => void requestQuit(),
+              },
             ],
           },
           {
@@ -585,9 +592,9 @@ else {
         }
         const result = await backend.invoke(c);
         if (["connect", "resume", "disconnect", "forget"].includes(c.op)) {
-          if ("profileId" in c) sync?.resetProfile(c.profileId);
+          if (result.ok && "profileId" in c) sync?.resetProfile(c.profileId);
           refreshTray();
-          sync?.wake();
+          if (result.ok) sync?.wake();
         }
         if (c.op === "preferences") {
           refreshTray();

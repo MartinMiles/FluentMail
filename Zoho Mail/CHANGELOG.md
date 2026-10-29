@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0 — 2026-10-28
+
+- Prevent late mailbox failures/token responses from restoring credentials after Forget; cancel stale transport sessions without saving their old state.
+
+- Fix cleared/legacy drafts, serialize local writes, and preserve prior settings when protected storage fails.
+- Validate actual attachment ownership/size and all files before upload; reject oversized selections early, flag restored files needing reattachment, and release unused handles.
+- Prevent reconnect/disconnect/forget from interrupting submissions. Ignore obsolete polling failures and renew healthy queued sessions before dispatch without retrying mail operations.
+- Preserve the uncertain-send guard while allowing correction of operations proven never submitted.
+- Repair recipient chip entry and link-editor keyboard behavior; lock signature changes during countdown and protect exit during pending media operations.
+- Bind messages, replies, notifications and check times to their source mailbox; clear completed bulk selections and normalize invalid dates.
+- Bound streamed downloads, validate provider identifiers, allow legitimate dotted query values and avoid unnecessary metadata requests for blocked remote images.
+- Memoize safe reading content and add File → Exit Fluent Mail / Ctrl+Shift+Q using the existing draft-flush safeguard.
+- Document the code and UX audit in docs/REVIEW-1.7.md.
+
 ## 1.6.0 — 2026-10-28
 
 - Make conversation chronology explicit: newest first by default, a remembered oldest-first option, independent Latest/Earlier/Unread labels, meaningful timestamps and chronological sequence numbers when full history is available.
